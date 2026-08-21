@@ -1,0 +1,12 @@
+# Runtime state (contains your personal usage history)
+pace-history.json
+
+# Node
+node_modules/
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

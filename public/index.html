@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Claude Usage Tracker</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="viz-root">
+    <header class="page-header">
+      <div>
+        <h1>Claude Usage Tracker</h1>
+        <p class="subtitle" id="subtitle">Lade Daten …</p>
+      </div>
+      <button id="popoutBtn" class="popout-btn" title="Als schwebendes Mini-Fenster öffnen (Picture-in-Picture)">
+        Popout
+      </button>
+    </header>
+
+    <div class="filter-row" id="filterRow" role="group" aria-label="Zeitraum">
+      <button data-days="7">7 Tage</button>
+      <button data-days="30" class="selected">30 Tage</button>
+      <button data-days="90">90 Tage</button>
+      <button data-days="all">Alles</button>
+    </div>
+
+    <section class="card" id="limitsCard" hidden>
+      <div class="card-head">
+        <h2>Plan-Limits <span class="muted" id="limitsMeta"></span></h2>
+      </div>
+      <div class="limits" id="limits"></div>
+    </section>
+
+    <section class="tiles" id="tiles"></section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Kosten pro Tag <span class="muted">nach Modell (API-Listenpreise)</span></h2>
+        <div class="legend" id="legend"></div>
+      </div>
+      <div class="chart-wrap">
+        <svg id="chart" role="img" aria-label="Gestapeltes Balkendiagramm der täglichen Kosten pro Modell"></svg>
+        <div class="tooltip" id="tooltip" hidden></div>
+      </div>
+    </section>
+
+    <div class="two-col">
+      <section class="card">
+        <h2>Nach Projekt</h2>
+        <table id="projectTable">
+          <thead><tr><th>Projekt</th><th class="num">Kosten</th><th class="num">Tokens</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+      <section class="card">
+        <h2>Nach Modell</h2>
+        <table id="modelTable">
+          <thead><tr><th>Modell</th><th class="num">Kosten</th><th class="num">Output</th><th class="num">Cache-Read</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+    </div>
+
+    <footer class="page-footer">
+      Kosten sind rechnerische API-Listenpreise (bei Abo-Nutzung rein informativ). Quelle: <code>~/.claude/projects</code>
+    </footer>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
