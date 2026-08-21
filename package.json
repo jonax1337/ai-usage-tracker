@@ -1,6 +1,6 @@
 {
   "name": "claude-code-usage-tracker",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Local zero-dependency dashboard and CLI for Claude Code token usage, costs, plan limits, and pace predictions",
   "type": "module",
   "bin": {
