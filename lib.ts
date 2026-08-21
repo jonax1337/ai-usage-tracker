@@ -2,10 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import readline from "node:readline";
-import { fileURLToPath } from "node:url";
 
 const PROJECTS_DIR = path.join(os.homedir(), ".claude", "projects");
-const BASE_DIR = path.dirname(fileURLToPath(import.meta.url));
+// User-scoped state dir — a globally installed package must not write into itself
+export const STATE_DIR = path.join(os.homedir(), ".claude-usage-tracker");
+fs.mkdirSync(STATE_DIR, { recursive: true });
 
 export interface ModelPricing {
   input: number;
@@ -69,7 +70,7 @@ const PRICING: Array<[string, number, number, number, number]> = [
 // Claude-Modelle ab). Auf Disk gecacht, täglich aktualisiert, PRICING als Fallback.
 const PRICING_URL =
   "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
-const PRICING_CACHE = path.join(BASE_DIR, "pricing-cache.json");
+const PRICING_CACHE = path.join(STATE_DIR, "pricing-cache.json");
 
 let livePricing: { fetchedAt: number; models: Record<string, ModelPricing> } = {
   fetchedAt: 0,
@@ -103,13 +104,15 @@ async function refreshPricing(): Promise<void> {
   if (Object.keys(models).length === 0) throw new Error("pricing data empty");
   livePricing = { fetchedAt: Date.now(), models };
   fs.writeFile(PRICING_CACHE, JSON.stringify(livePricing), () => {});
-  console.log(`Pricing refreshed: ${Object.keys(models).length} Claude models (LiteLLM)`);
+  if (process.env.CLAUDE_USAGE_VERBOSE) {
+    console.log(`Pricing refreshed: ${Object.keys(models).length} Claude models (LiteLLM)`);
+  }
 }
 
 refreshPricing().catch((err) =>
   console.warn("Live pricing unavailable, using fallback:", (err as Error).message),
 );
-setInterval(() => refreshPricing().catch(() => {}), 24 * 3600 * 1000);
+setInterval(() => refreshPricing().catch(() => {}), 24 * 3600 * 1000).unref();
 
 function pricingFor(model: string): ModelPricing | null {
   // Transkript-IDs normalisieren: Datums-Suffix und Kontext-Marker wie "[1m]" ab
@@ -302,7 +305,7 @@ function planLabel(tier: string | null | undefined): string | null {
 }
 
 // Pace-Historie: regelmäßige Samples der Limit-Prozente, persistiert über Neustarts
-const HISTORY_FILE = path.join(BASE_DIR, "pace-history.json");
+const HISTORY_FILE = path.join(STATE_DIR, "pace-history.json");
 const HISTORY_MAX_AGE = 8 * 24 * 3600 * 1000;
 
 interface PaceSample {
@@ -400,7 +403,7 @@ export function withPredictions(limits: LimitInfo[]): PredictedLimit[] {
 
 // Letzter guter Live-Stand, auf Disk persistiert — überlebt Server-Neustarts,
 // damit ein 429-Cooldown nicht auf uralte Daten zurückwirft.
-const LIMITS_CACHE = path.join(BASE_DIR, "limits-cache.json");
+const LIMITS_CACHE = path.join(STATE_DIR, "limits-cache.json");
 
 let liveLimitsCache: { at: number; data: LimitsPayload | null } = { at: 0, data: null };
 let limitsCooldownUntil = 0; // Backoff nach Fehlern (z. B. 429 vom Usage-Endpoint)
@@ -440,7 +443,7 @@ export async function fetchLiveLimits(): Promise<LimitsPayload | null> {
 }
 
 // Auch ohne offenes Dashboard weiter sampeln, damit die Pace-Historie dicht bleibt
-setInterval(() => fetchLiveLimits().catch(() => {}), 5 * 60 * 1000);
+setInterval(() => fetchLiveLimits().catch(() => {}), 5 * 60 * 1000).unref();
 fetchLiveLimits().catch(() => {});
 
 // Fallback-Kandidat: Claude Codes Cache-Metadaten, aber mit den Prozentwerten

@@ -3,6 +3,19 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [SemVer](https://semver.org/).
 
+## [1.3.0] - 2026-08-21
+
+### Added
+
+- **npm package** `claude-code-usage-tracker`: `npm i -g` provides the `claude-usage` command
+- Subcommands: `serve` (foreground dashboard), `start`/`stop`/`status` (background daemon with PID file and log in `~/.claude-usage-tracker/`)
+- Compiled `dist/` build (plain ESM JavaScript) so the published package runs on Node ≥ 20
+
+### Changed
+
+- State files (pace history, pricing cache, limits snapshot) moved from the package directory to `~/.claude-usage-tracker/`
+- Internal refresh timers no longer keep short-lived CLI commands alive
+
 ## [1.2.0] - 2026-08-21
 
 ### Added

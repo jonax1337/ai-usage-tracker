@@ -1,17 +1,25 @@
 {
-  "name": "claude-usage-tracker",
-  "version": "1.2.0",
-  "description": "Local zero-dependency dashboard for Claude Code token usage, costs, plan limits, and pace predictions",
+  "name": "claude-code-usage-tracker",
+  "version": "1.3.0",
+  "description": "Local zero-dependency dashboard and CLI for Claude Code token usage, costs, plan limits, and pace predictions",
   "type": "module",
-  "main": "server.ts",
   "bin": {
-    "claude-usage": "cli.ts"
+    "claude-usage": "dist/cli.js"
   },
+  "files": [
+    "dist",
+    "public",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "start": "node server.ts",
     "cli": "node cli.ts",
     "build": "tsc -p tsconfig.web.json",
-    "check": "tsc -p tsconfig.json && tsc -p tsconfig.web.json --noEmit"
+    "build:node": "tsc -p tsconfig.node.json",
+    "check": "tsc -p tsconfig.json && tsc -p tsconfig.web.json --noEmit",
+    "prepublishOnly": "npm run check && npm run build && npm run build:node"
   },
   "keywords": [
     "claude",
@@ -19,6 +27,7 @@
     "usage",
     "tokens",
     "dashboard",
+    "cli",
     "rate-limits",
     "local-first",
     "typescript"
@@ -30,7 +39,7 @@
     "url": "git+https://github.com/jonax1337/claude-usage-tracker.git"
   },
   "engines": {
-    "node": ">=23.6"
+    "node": ">=20"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

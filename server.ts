@@ -8,7 +8,11 @@ import { collectUsage, getLimits } from "./lib.ts";
 const PORT = Number(process.env.PORT) || 3789;
 const PROJECTS_DIR = path.join(os.homedir(), ".claude", "projects");
 const CLAUDE_JSON = path.join(os.homedir(), ".claude.json");
-const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "public");
+// Dev layout: ./public next to server.ts — packaged layout: dist/server.js with ../public
+const OWN_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PUBLIC_DIR = [path.join(OWN_DIR, "public"), path.join(OWN_DIR, "..", "public")]
+  .map((p) => path.resolve(p))
+  .find((p) => fs.existsSync(p)) ?? path.join(OWN_DIR, "public");
 
 // Live updates: SSE clients notified on changes under PROJECTS_DIR
 const sseClients = new Set<http.ServerResponse>();

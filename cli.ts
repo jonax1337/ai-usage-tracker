@@ -1,10 +1,26 @@
 #!/usr/bin/env node
-// Terminal widget: keeps rendering current plan limits, pace, and today's
-// usage in place. Run with `npm run cli` (or `node cli.ts`).
+// claude-usage — CLI entry point.
+//
+//   claude-usage            live terminal widget (limits, pace, today's cost)
+//   claude-usage serve      run the web dashboard in the foreground
+//   claude-usage start      run the web dashboard as a background daemon
+//   claude-usage stop       stop the background daemon
+//   claude-usage status     show whether the daemon is running
 
-import { collectUsage, getLimits, type PredictedLimit } from "./lib.ts";
+import { spawn } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { collectUsage, getLimits, STATE_DIR, type PredictedLimit } from "./lib.ts";
 
 const REFRESH_MS = 30_000;
+const PORT = Number(process.env.PORT) || 3789;
+const PID_FILE = path.join(STATE_DIR, "server.pid");
+const LOG_FILE = path.join(STATE_DIR, "server.log");
+
+// Works both in dev (cli.ts → server.ts) and packaged (dist/cli.js → dist/server.js)
+const OWN_PATH = fileURLToPath(import.meta.url);
+const SERVER_ENTRY = path.join(path.dirname(OWN_PATH), `server${path.extname(OWN_PATH)}`);
 
 // ANSI helpers — no dependencies
 const ESC = "\x1b[";
@@ -16,7 +32,6 @@ const fg = (color: number, s: string) => `${ESC}38;5;${color}m${s}${reset}`;
 const GREEN = 34;
 const YELLOW = 214;
 const RED = 160;
-const BLUE = 32;
 
 const fmtCost = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
 const fmtTokens = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
@@ -26,6 +41,55 @@ const LIMIT_NAMES: Record<string, string> = {
   weekly_all: "Week · all",
   weekly_scoped: "Week",
 };
+
+// ---------- daemon management ----------
+
+function runningPid(): number | null {
+  try {
+    const pid = Number(fs.readFileSync(PID_FILE, "utf8").trim());
+    if (!pid) return null;
+    process.kill(pid, 0); // throws if the process is gone
+    return pid;
+  } catch {
+    return null;
+  }
+}
+
+function daemonStart(): void {
+  const existing = runningPid();
+  if (existing) {
+    console.log(`Already running (pid ${existing}) → http://localhost:${PORT}`);
+    return;
+  }
+  const log = fs.openSync(LOG_FILE, "a");
+  const child = spawn(process.execPath, [SERVER_ENTRY], {
+    detached: true,
+    stdio: ["ignore", log, log],
+    env: process.env,
+  });
+  child.unref();
+  fs.writeFileSync(PID_FILE, String(child.pid));
+  console.log(`Dashboard started (pid ${child.pid}) → http://localhost:${PORT}`);
+  console.log(`Logs: ${LOG_FILE}`);
+}
+
+function daemonStop(): void {
+  const pid = runningPid();
+  if (!pid) {
+    console.log("Not running.");
+    return;
+  }
+  process.kill(pid);
+  fs.rmSync(PID_FILE, { force: true });
+  console.log(`Stopped (pid ${pid}).`);
+}
+
+function daemonStatus(): void {
+  const pid = runningPid();
+  console.log(pid ? `Running (pid ${pid}) → http://localhost:${PORT}` : "Not running.");
+}
+
+// ---------- live terminal widget ----------
 
 function limitColor(l: PredictedLimit): number {
   if (l.severity !== "normal" || l.percent >= 90) return RED;
@@ -104,28 +168,73 @@ async function frame(): Promise<string> {
   return lines.join("\n");
 }
 
-let lastHeight = 0;
+async function widget(): Promise<void> {
+  let lastHeight = 0;
 
-async function tick(): Promise<void> {
-  let out: string;
-  try {
-    out = await frame();
-  } catch (err) {
-    out = fg(RED, `Error: ${(err as Error).message}`);
-  }
-  // Redraw in place: move cursor up over the previous frame, clear below
-  if (lastHeight > 0) process.stdout.write(`${ESC}${lastHeight}A`);
-  process.stdout.write(`${ESC}0J` + out + "\n");
-  lastHeight = out.split("\n").length + 1;
+  const tick = async (): Promise<void> => {
+    let out: string;
+    try {
+      out = await frame();
+    } catch (err) {
+      out = fg(RED, `Error: ${(err as Error).message}`);
+    }
+    // Redraw in place: move cursor up over the previous frame, clear below
+    if (lastHeight > 0) process.stdout.write(`${ESC}${lastHeight}A`);
+    process.stdout.write(`${ESC}0J` + out + "\n");
+    lastHeight = out.split("\n").length + 1;
+  };
+
+  process.stdout.write(`${ESC}?25l`); // hide cursor
+  const restore = () => {
+    process.stdout.write(`${ESC}?25h`); // show cursor
+    process.exit(0);
+  };
+  process.on("SIGINT", restore);
+  process.on("SIGTERM", restore);
+
+  await tick();
+  setInterval(tick, REFRESH_MS);
 }
 
-process.stdout.write(`${ESC}?25l`); // hide cursor
-const restore = () => {
-  process.stdout.write(`${ESC}?25h`); // show cursor
-  process.exit(0);
-};
-process.on("SIGINT", restore);
-process.on("SIGTERM", restore);
+// ---------- dispatch ----------
 
-await tick();
-setInterval(tick, REFRESH_MS);
+const HELP = `claude-usage — local Claude Code usage tracker
+
+Usage:
+  claude-usage            live terminal widget (limits, pace, today's cost)
+  claude-usage serve      run the web dashboard in the foreground
+  claude-usage start      run the web dashboard as a background daemon
+  claude-usage stop       stop the background daemon
+  claude-usage status     show whether the daemon is running
+
+Dashboard: http://localhost:${PORT}  (PORT env var to change)
+State dir: ${STATE_DIR}`;
+
+const command = process.argv[2] ?? "";
+switch (command) {
+  case "":
+  case "widget":
+    await widget();
+    break;
+  case "serve":
+    await import("./server.ts");
+    break;
+  case "start":
+    daemonStart();
+    break;
+  case "stop":
+    daemonStop();
+    break;
+  case "status":
+    daemonStatus();
+    break;
+  case "help":
+  case "--help":
+  case "-h":
+    console.log(HELP);
+    break;
+  default:
+    console.error(`Unknown command: ${command}\n`);
+    console.log(HELP);
+    process.exitCode = 1;
+}

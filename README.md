@@ -21,17 +21,33 @@ A local, zero-dependency dashboard for your [Claude Code](https://claude.com/cla
 - **Live pricing** — model prices are fetched from the community-maintained [LiteLLM price database](https://github.com/BerriAI/litellm) (daily refresh, disk-cached), with a built-in table as fallback
 - **Zero runtime dependencies** — TypeScript, run natively by Node.js (type stripping). No frameworks, no build step for the server, nothing phoning home
 
-## Quick start
+## Install
+
+```bash
+npm install -g claude-code-usage-tracker
+```
+
+That gives you the `claude-usage` command:
+
+```bash
+claude-usage            # live terminal widget (limits, pace, today's cost)
+claude-usage serve      # web dashboard in the foreground
+claude-usage start      # web dashboard as a background daemon
+claude-usage stop       # stop the daemon
+claude-usage status     # is the daemon running?
+```
+
+Open **http://localhost:3789** once the dashboard runs (`PORT` env var to change). State and logs live in `~/.claude-usage-tracker/`.
+
+Requirements: Node.js ≥ 20 and a machine where Claude Code has been used (transcripts in `~/.claude/projects`).
+
+### From source
 
 ```bash
 git clone https://github.com/jonax1337/claude-usage-tracker.git
 cd claude-usage-tracker
-npm start
+npm start               # Node >= 23.6 (runs the .ts natively)
 ```
-
-Open **http://localhost:3789**. That's it — `npm install` is only needed for development (TypeScript tooling); the server runs the `.ts` file natively and the compiled frontend is committed.
-
-Requirements: Node.js ≥ 23.6 (native TypeScript support) and a machine where Claude Code has been used (transcripts in `~/.claude/projects`).
 
 ## How it works
 
@@ -49,7 +65,7 @@ The server parses transcripts with per-file mtime caching and deduplicates strea
 A live terminal widget that keeps re-rendering in place — plan limits with colored meters, pace predictions, and today's cost:
 
 ```bash
-npm run cli
+claude-usage            # (or npm run cli from a checkout)
 ```
 
 ```
