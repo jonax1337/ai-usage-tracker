@@ -3,6 +3,13 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [SemVer](https://semver.org/).
 
+## [1.4.0] - 2026-08-21
+
+### Added
+
+- CLI widget sets the terminal window title on every refresh: status emoji (🟢/🟡/🔴) plus session and week percentages, restored on exit
+- npm releases are automated: pushing a `v*` tag publishes via GitHub Actions with OIDC trusted publishing and provenance
+
 ## [1.3.0] - 2026-08-21
 
 ### Added

@@ -136,8 +136,31 @@ function localToday(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+// Terminal window title via OSC 0 — updated on every refresh, like Claude Code does
+function setTitle(title: string): void {
+  if (process.stdout.isTTY) process.stdout.write(`\x1b]0;${title}\x07`);
+}
+
+function titleFor(limits: Awaited<ReturnType<typeof getLimits>>): string {
+  if (!limits) return "📊 Claude Usage";
+  const ls = limits.limits as PredictedLimit[];
+  const worst = ls.some((l) => l.severity !== "normal" || l.percent >= 90)
+    ? "🔴"
+    : ls.some((l) => l.percent >= 70)
+      ? "🟡"
+      : "🟢";
+  const session = ls.find((l) => l.kind === "session");
+  const weekMax = Math.max(...ls.filter((l) => l.kind !== "session").map((l) => l.percent), 0);
+  const parts = [
+    session ? `${session.percent}% session` : null,
+    weekMax > 0 ? `${weekMax}% week` : null,
+  ].filter(Boolean);
+  return `${worst} ${parts.join(" · ")} — Claude Usage`;
+}
+
 async function frame(): Promise<string> {
   const [limits, usage] = await Promise.all([getLimits(), collectUsage()]);
+  setTitle(titleFor(limits));
   const lines: string[] = [];
   const now = new Date().toLocaleTimeString("en-US");
 
@@ -187,6 +210,7 @@ async function widget(): Promise<void> {
   process.stdout.write(`${ESC}?25l`); // hide cursor
   const restore = () => {
     process.stdout.write(`${ESC}?25h`); // show cursor
+    setTitle(""); // hand the title back to the shell
     process.exit(0);
   };
   process.on("SIGINT", restore);
