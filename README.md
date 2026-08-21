@@ -19,7 +19,7 @@ A local, zero-dependency dashboard for your [Claude Code](https://claude.com/cla
 ## Quick start
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/claude-usage-tracker.git
+git clone https://github.com/jonax1337/claude-usage-tracker.git
 cd claude-usage-tracker
 npm start
 ```
