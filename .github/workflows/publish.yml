@@ -1,0 +1,32 @@
+name: Publish to npm
+
+# Publishes automatically whenever a version tag (v1.4.0, …) is pushed.
+# Uses npm Trusted Publishing (OIDC) — no npm token stored in the repo —
+# and generates provenance, so npm shows the verified source badge.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC for npm trusted publishing / provenance
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs a recent npm
+      - run: npm install -g npm@latest
+
+      - run: npm ci
+
+      # prepublishOnly runs typecheck + builds (web + dist) before publishing
+      - run: npm publish --provenance --access public
