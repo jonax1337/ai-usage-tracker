@@ -2,9 +2,12 @@
 
 A local, zero-dependency dashboard for your [Claude Code](https://claude.com/claude-code) token usage, costs, and plan limits — with live updates, pace predictions, and a floating picture-in-picture widget.
 
-![Node.js >= 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
-![No dependencies](https://img.shields.io/badge/dependencies-0-blue)
+![Node.js >= 23.6](https://img.shields.io/badge/node-%3E%3D23.6-brightgreen)
+![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue)
+![No runtime dependencies](https://img.shields.io/badge/runtime%20deps-0-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey)
+
+![Dashboard](docs/screenshot.png)
 
 ## Features
 
@@ -14,7 +17,8 @@ A local, zero-dependency dashboard for your [Claude Code](https://claude.com/cla
 - **Real-time updates** — a file watcher on `~/.claude/projects` pushes changes to the browser via Server-Sent Events; the chart ticks while your sessions run
 - **Popout widget** — a compact always-on-top mini window via the Document Picture-in-Picture API (Chromium). Grows responsively: wider windows reveal reset times and stat tiles
 - **Light & dark** — follows your system theme, with an accessible, CVD-safe chart palette
-- **Zero dependencies** — plain Node.js, plain HTML/CSS/JS. Nothing to install, nothing phoning home
+- **Live pricing** — model prices are fetched from the community-maintained [LiteLLM price database](https://github.com/BerriAI/litellm) (daily refresh, disk-cached), with a built-in table as fallback
+- **Zero runtime dependencies** — TypeScript, run natively by Node.js (type stripping). No frameworks, no build step for the server, nothing phoning home
 
 ## Quick start
 
@@ -24,9 +28,9 @@ cd claude-usage-tracker
 npm start
 ```
 
-Open **http://localhost:3789**. That's it — no build step, no config.
+Open **http://localhost:3789**. That's it — `npm install` is only needed for development (TypeScript tooling); the server runs the `.ts` file natively and the compiled frontend is committed.
 
-Requirements: Node.js ≥ 20 and a machine where Claude Code has been used (transcripts in `~/.claude/projects`).
+Requirements: Node.js ≥ 23.6 (native TypeScript support) and a machine where Claude Code has been used (transcripts in `~/.claude/projects`).
 
 ## How it works
 
@@ -35,6 +39,7 @@ Requirements: Node.js ≥ 20 and a machine where Claude Code has been used (tran
 | Tokens & costs | `~/.claude/projects/**/*.jsonl` — Claude Code's session transcripts. Each assistant message carries a `usage` block (input, output, cache read/write tokens). Costs are computed at public API list prices, so they are informative even on a subscription plan. |
 | Plan limits | `https://api.anthropic.com/api/oauth/usage`, authenticated with the OAuth token Claude Code stores in `~/.claude/.credentials.json`. Falls back to Claude Code's own cache in `~/.claude.json` if the live fetch fails. |
 | Pace history | Sampled every 5 minutes and persisted to `pace-history.json` (gitignored) so predictions survive restarts. |
+| Model pricing | [LiteLLM price database](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json), refreshed daily and cached to `pricing-cache.json` (gitignored). Falls back to a built-in table when offline. |
 
 The server parses transcripts with per-file mtime caching and deduplicates streaming entries by message ID, so reloads stay fast even with large histories.
 
@@ -48,7 +53,15 @@ Click **Popout** in the header to get a floating mini window (Chromium's Documen
 |---|---|---|
 | `PORT` | `3789` | HTTP port |
 
-Model pricing lives in the `PRICING` table at the top of `server.js` — adjust when Anthropic ships new models.
+## Development
+
+```bash
+npm install          # TypeScript tooling (dev-only)
+npm run build        # compile src/app.ts → public/app.js
+npm run check        # typecheck server + frontend (strict mode)
+```
+
+`server.ts` runs natively via Node's type stripping — no bundler, no transpile step. The frontend source lives in `src/app.ts`; the compiled `public/app.js` is committed so a clone runs without building.
 
 ## Privacy
 

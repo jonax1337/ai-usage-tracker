@@ -5,13 +5,60 @@ import os from "node:os";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
-const PORT = process.env.PORT || 3789;
+const PORT = Number(process.env.PORT) || 3789;
 const PROJECTS_DIR = path.join(os.homedir(), ".claude", "projects");
-const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "public");
+const BASE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PUBLIC_DIR = path.join(BASE_DIR, "public");
 
-// USD pro Million Tokens: [substring-match, input, output, cacheWrite5m, cacheRead]
-// Reihenfolge zählt — spezifischere Einträge vor generischen.
-const PRICING = [
+interface ModelPricing {
+  input: number;
+  output: number;
+  cacheWrite: number;
+  cacheRead: number;
+}
+
+interface UsageEntry {
+  ts: string;
+  model: string;
+  input: number;
+  cacheWrite: number;
+  cacheRead: number;
+  output: number;
+}
+
+interface UsageRow extends Omit<UsageEntry, "ts"> {
+  date: string;
+  project: string;
+  cost: number;
+}
+
+interface LimitInfo {
+  kind: string;
+  percent: number;
+  severity: string;
+  resetsAt: string | null;
+  scope: string | null;
+}
+
+interface PredictedLimit extends LimitInfo {
+  isSession: boolean;
+  pacePerHour: number | null;
+  exhaustsAtMs: number | null;
+  exhaustsBeforeReset: boolean;
+  projectedAtReset: number | null;
+}
+
+interface LimitsPayload {
+  fetchedAtMs: number;
+  source: "live" | "cache";
+  plan: string | null;
+  limits: LimitInfo[] | PredictedLimit[];
+}
+
+// Fallback-Preise, USD pro Million Tokens: [substring-match, input, output, cacheWrite5m, cacheRead]
+// Reihenfolge zählt — spezifischere Einträge vor generischen. Primär kommen die
+// Preise live aus der LiteLLM-Datenbank (siehe refreshPricing).
+const PRICING: Array<[string, number, number, number, number]> = [
   ["fable", 10, 50, 12.5, 1],
   ["mythos", 10, 50, 12.5, 1],
   ["opus-4-1", 15, 75, 18.75, 1.5],
@@ -21,12 +68,62 @@ const PRICING = [
   ["haiku", 1, 5, 1.25, 0.1],
 ];
 
-function pricingFor(model) {
-  const row = PRICING.find(([m]) => model.includes(m));
+// Live-Preise aus der LiteLLM-Preisdatenbank (Community-gepflegt, deckt alle
+// Claude-Modelle ab). Auf Disk gecacht, täglich aktualisiert, PRICING als Fallback.
+const PRICING_URL =
+  "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
+const PRICING_CACHE = path.join(BASE_DIR, "pricing-cache.json");
+
+let livePricing: { fetchedAt: number; models: Record<string, ModelPricing> } = {
+  fetchedAt: 0,
+  models: {},
+};
+try {
+  livePricing = JSON.parse(fs.readFileSync(PRICING_CACHE, "utf8"));
+} catch {}
+
+interface LiteLLMEntry {
+  input_cost_per_token?: number;
+  output_cost_per_token?: number;
+  cache_creation_input_token_cost?: number;
+  cache_read_input_token_cost?: number;
+}
+
+async function refreshPricing(): Promise<void> {
+  const res = await fetch(PRICING_URL, { signal: AbortSignal.timeout(15000) });
+  if (!res.ok) throw new Error(`pricing fetch ${res.status}`);
+  const raw = (await res.json()) as Record<string, LiteLLMEntry>;
+  const models: Record<string, ModelPricing> = {};
+  for (const [key, e] of Object.entries(raw)) {
+    if (!key.includes("claude") || typeof e?.input_cost_per_token !== "number") continue;
+    models[key.replace(/^anthropic\//, "")] = {
+      input: e.input_cost_per_token * 1e6,
+      output: (e.output_cost_per_token ?? 0) * 1e6,
+      cacheWrite: (e.cache_creation_input_token_cost ?? e.input_cost_per_token * 1.25) * 1e6,
+      cacheRead: (e.cache_read_input_token_cost ?? e.input_cost_per_token * 0.1) * 1e6,
+    };
+  }
+  if (Object.keys(models).length === 0) throw new Error("pricing data empty");
+  livePricing = { fetchedAt: Date.now(), models };
+  fs.writeFile(PRICING_CACHE, JSON.stringify(livePricing), () => {});
+  console.log(`Preise aktualisiert: ${Object.keys(models).length} Claude-Modelle (LiteLLM)`);
+}
+
+refreshPricing().catch((err) =>
+  console.warn("Live-Preise nicht verfügbar, nutze Fallback:", (err as Error).message),
+);
+setInterval(() => refreshPricing().catch(() => {}), 24 * 3600 * 1000);
+
+function pricingFor(model: string): ModelPricing | null {
+  // Transkript-IDs normalisieren: Datums-Suffix und Kontext-Marker wie "[1m]" ab
+  const id = model.replace(/\[[^\]]*\]$/, "").replace(/-\d{8}$/, "");
+  const live = livePricing.models[model] ?? livePricing.models[id];
+  if (live) return live;
+  const row = PRICING.find(([m]) => id.includes(m));
   return row ? { input: row[1], output: row[2], cacheWrite: row[3], cacheRead: row[4] } : null;
 }
 
-function cost(model, u) {
+function cost(model: string, u: Pick<UsageEntry, "input" | "output" | "cacheWrite" | "cacheRead">): number {
   const p = pricingFor(model);
   if (!p) return 0;
   return (
@@ -39,16 +136,32 @@ function cost(model, u) {
 }
 
 // Datei-Cache, damit wiederholte Dashboard-Reloads nicht alles neu parsen.
-const fileCache = new Map(); // filePath -> { mtimeMs, size, entries }
+const fileCache = new Map<string, { mtimeMs: number; size: number; entries: UsageEntry[] }>();
 
-async function parseTranscript(filePath) {
+interface TranscriptLine {
+  type?: string;
+  timestamp?: string;
+  requestId?: string;
+  message?: {
+    id?: string;
+    model?: string;
+    usage?: {
+      input_tokens?: number;
+      cache_creation_input_tokens?: number;
+      cache_read_input_tokens?: number;
+      output_tokens?: number;
+    };
+  };
+}
+
+async function parseTranscript(filePath: string): Promise<UsageEntry[]> {
   const stat = fs.statSync(filePath);
   const cached = fileCache.get(filePath);
   if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
     return cached.entries;
   }
 
-  const entries = new Map(); // dedupe key -> entry (letzter Eintrag gewinnt)
+  const entries = new Map<string, UsageEntry>(); // dedupe key -> entry (letzter Eintrag gewinnt)
   const rl = readline.createInterface({
     input: fs.createReadStream(filePath, "utf8"),
     crlfDelay: Infinity,
@@ -58,7 +171,7 @@ async function parseTranscript(filePath) {
   for await (const line of rl) {
     lineNo++;
     if (!line.includes('"usage"')) continue;
-    let obj;
+    let obj: TranscriptLine;
     try {
       obj = JSON.parse(line);
     } catch {
@@ -67,12 +180,12 @@ async function parseTranscript(filePath) {
     const msg = obj?.message;
     const usage = msg?.usage;
     // "<synthetic>" sind Claude-Code-Platzhalter (Fehlermeldungen) ohne echte Nutzung
-    if (obj?.type !== "assistant" || !usage || !msg.model || msg.model.startsWith("<")) continue;
+    if (obj?.type !== "assistant" || !usage || !msg?.model || msg.model.startsWith("<")) continue;
 
     // Streaming schreibt dieselbe Message mehrfach — auf id+requestId dedupen.
     const key = msg.id ? `${msg.id}:${obj.requestId ?? ""}` : `line:${lineNo}`;
     entries.set(key, {
-      ts: obj.timestamp,
+      ts: obj.timestamp ?? "",
       model: msg.model,
       input: usage.input_tokens ?? 0,
       cacheWrite: usage.cache_creation_input_tokens ?? 0,
@@ -86,24 +199,24 @@ async function parseTranscript(filePath) {
   return result;
 }
 
-function localDate(ts) {
+function localDate(ts: string): string | null {
   const d = new Date(ts);
-  if (isNaN(d)) return null;
-  const pad = (n) => String(n).padStart(2, "0");
+  if (isNaN(d.getTime())) return null;
+  const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 // Ordnernamen wie "E--DEV-LS25-FlowLink" auf das letzte Pfadsegment kürzen.
-function projectLabel(dirName) {
+function projectLabel(dirName: string): string {
   const parts = dirName.split("-").filter(Boolean);
   return parts.length ? parts[parts.length - 1] : dirName;
 }
 
 async function collectUsage() {
-  const rows = new Map(); // date|project|model -> aggregierte Zeile
-  const sessionsByDay = new Map(); // date -> Set(sessionId)
+  const rows = new Map<string, UsageRow>();
+  const sessionsByDay = new Map<string, Set<string>>();
 
-  let projectDirs = [];
+  let projectDirs: fs.Dirent[] = [];
   try {
     projectDirs = fs
       .readdirSync(PROJECTS_DIR, { withFileTypes: true })
@@ -119,7 +232,7 @@ async function collectUsage() {
 
     for (const file of files) {
       const sessionId = file.replace(/\.jsonl$/, "");
-      let entries;
+      let entries: UsageEntry[];
       try {
         entries = await parseTranscript(path.join(dirPath, file));
       } catch {
@@ -141,13 +254,17 @@ async function collectUsage() {
         row.cost += cost(e.model, e);
 
         if (!sessionsByDay.has(date)) sessionsByDay.set(date, new Set());
-        sessionsByDay.get(date).add(sessionId);
+        sessionsByDay.get(date)!.add(sessionId);
       }
     }
   }
 
   return {
     generatedAt: new Date().toISOString(),
+    pricing: {
+      source: livePricing.fetchedAt ? "live" : "static",
+      fetchedAt: livePricing.fetchedAt || null,
+    },
     rows: [...rows.values()].sort((a, b) => a.date.localeCompare(b.date)),
     sessions: [...sessionsByDay.entries()]
       .map(([date, set]) => ({ date, count: set.size }))
@@ -155,19 +272,20 @@ async function collectUsage() {
   };
 }
 
-const MIME = {
-  ".html": "text/html; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".svg": "image/svg+xml",
-};
-
 // Plan-Limits (Session/Weekly): primär live über Anthropics OAuth-Usage-Endpoint,
 // mit dem Token, das Claude Code lokal pflegt. Fallback: Claude Codes eigener Cache.
 const CLAUDE_JSON = path.join(os.homedir(), ".claude.json");
 const CREDENTIALS = path.join(os.homedir(), ".claude", ".credentials.json");
 
-function mapLimits(limits) {
+interface RawLimit {
+  kind: string;
+  percent: number;
+  severity: string;
+  resets_at: string | null;
+  scope?: { model?: { display_name?: string } | null } | null;
+}
+
+function mapLimits(limits: RawLimit[]): LimitInfo[] {
   return limits.map((l) => ({
     kind: l.kind,
     percent: l.percent,
@@ -177,7 +295,7 @@ function mapLimits(limits) {
   }));
 }
 
-function planLabel(tier) {
+function planLabel(tier: string | null | undefined): string | null {
   return (
     (tier ?? "")
       .replace(/^default_claude_/, "")
@@ -187,10 +305,15 @@ function planLabel(tier) {
 }
 
 // Pace-Historie: regelmäßige Samples der Limit-Prozente, persistiert über Neustarts
-const HISTORY_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), "pace-history.json");
+const HISTORY_FILE = path.join(BASE_DIR, "pace-history.json");
 const HISTORY_MAX_AGE = 8 * 24 * 3600 * 1000;
 
-let paceHistory = [];
+interface PaceSample {
+  t: number;
+  values: Record<string, number>;
+}
+
+let paceHistory: PaceSample[] = [];
 try {
   paceHistory = JSON.parse(fs.readFileSync(HISTORY_FILE, "utf8"));
 } catch {}
@@ -200,21 +323,21 @@ try {
   const cached = readLimits(); // Funktionsdeklaration, gehoisted
   if (!cached?.limits) return;
   if (paceHistory.some((s) => Math.abs(s.t - cached.fetchedAtMs) < 60000)) return;
-  const values = {};
+  const values: Record<string, number> = {};
   for (const l of cached.limits) values[limitKey(l)] = l.percent;
   paceHistory.push({ t: cached.fetchedAtMs, values });
   paceHistory.sort((a, b) => a.t - b.t);
 })();
 
-function limitKey(l) {
+function limitKey(l: LimitInfo): string {
   return l.scope ? `${l.kind}:${l.scope}` : l.kind;
 }
 
-function recordSample(limits) {
+function recordSample(limits: LimitInfo[]): void {
   const now = Date.now();
   const last = paceHistory[paceHistory.length - 1];
   if (last && now - last.t < 2 * 60 * 1000) return;
-  const values = {};
+  const values: Record<string, number> = {};
   for (const l of limits) values[limitKey(l)] = l.percent;
   paceHistory.push({ t: now, values });
   paceHistory = paceHistory.filter((s) => now - s.t < HISTORY_MAX_AGE);
@@ -223,7 +346,11 @@ function recordSample(limits) {
 
 // Pace in %/h über ein Zeitfenster; Samples vor einem Limit-Reset
 // (Prozentwert fällt deutlich) werden verworfen.
-function computePace(key, current, windowMs) {
+function computePace(
+  key: string,
+  current: number,
+  windowMs: number,
+): { pace: number; spanHours: number } | null {
   const now = Date.now();
   let samples = paceHistory
     .filter((s) => now - s.t < windowMs && s.values[key] != null)
@@ -242,7 +369,7 @@ function computePace(key, current, windowMs) {
   return { pace: (samples[samples.length - 1].v - samples[0].v) / dt, spanHours: dt };
 }
 
-function withPredictions(limits) {
+function withPredictions(limits: LimitInfo[]): PredictedLimit[] {
   return limits.map((l) => {
     const isSession = l.kind === "session";
     // Session: kurzes Fenster, lineare Fortschreibung ist hier fair.
@@ -254,8 +381,8 @@ function withPredictions(limits) {
     const pace = result == null || (!isSession && result.spanHours < 12) ? null : result.pace;
     const resetMs = l.resetsAt ? Date.parse(l.resetsAt) : null;
 
-    let exhaustsAtMs = null;
-    let projectedAtReset = null;
+    let exhaustsAtMs: number | null = null;
+    let projectedAtReset: number | null = null;
     if (pace != null && pace > 0.01 && l.percent < 100) {
       exhaustsAtMs = Date.now() + ((100 - l.percent) / pace) * 3600000;
       if (resetMs != null) {
@@ -274,10 +401,12 @@ function withPredictions(limits) {
   });
 }
 
-let liveLimitsCache = { at: 0, data: null };
+let liveLimitsCache: { at: number; data: LimitsPayload | null } = { at: 0, data: null };
+let limitsCooldownUntil = 0; // Backoff nach Fehlern (z. B. 429 vom Usage-Endpoint)
 
-async function fetchLiveLimits() {
-  if (Date.now() - liveLimitsCache.at < 30_000) return liveLimitsCache.data;
+async function fetchLiveLimits(): Promise<LimitsPayload | null> {
+  if (Date.now() - liveLimitsCache.at < 60_000) return liveLimitsCache.data;
+  if (Date.now() < limitsCooldownUntil) throw new Error("limits cooldown");
   const oauth = JSON.parse(fs.readFileSync(CREDENTIALS, "utf8")).claudeAiOauth;
   const res = await fetch("https://api.anthropic.com/api/oauth/usage", {
     headers: {
@@ -286,11 +415,14 @@ async function fetchLiveLimits() {
     },
     signal: AbortSignal.timeout(5000),
   });
-  if (!res.ok) throw new Error(`usage endpoint ${res.status}`);
-  const j = await res.json();
+  if (!res.ok) {
+    limitsCooldownUntil = Date.now() + (res.status === 429 ? 5 : 2) * 60 * 1000;
+    throw new Error(`usage endpoint ${res.status}`);
+  }
+  const j = (await res.json()) as { limits?: RawLimit[] };
   const limits = mapLimits(j.limits ?? []);
   recordSample(limits);
-  const data = {
+  const data: LimitsPayload = {
     fetchedAtMs: Date.now(),
     source: "live",
     plan: planLabel(oauth.rateLimitTier),
@@ -304,20 +436,15 @@ async function fetchLiveLimits() {
 setInterval(() => fetchLiveLimits().catch(() => {}), 5 * 60 * 1000);
 fetchLiveLimits().catch(() => {});
 
-function readLimits() {
+function readLimits(): LimitsPayload | null {
   try {
     const j = JSON.parse(fs.readFileSync(CLAUDE_JSON, "utf8"));
     const u = j.cachedUsageUtilization;
     if (!u?.utilization?.limits) return null;
-    const tier = j.oauthAccount?.organizationRateLimitTier ?? "";
-    const plan = tier
-      .replace(/^default_claude_/, "")
-      .replace(/_(\d+)x$/, " $1×")
-      .replace(/^\w/, (c) => c.toUpperCase());
     return {
       fetchedAtMs: u.fetchedAtMs,
       source: "cache",
-      plan: plan || null,
+      plan: planLabel(j.oauthAccount?.organizationRateLimitTier),
       limits: mapLimits(u.utilization.limits),
     };
   } catch {
@@ -326,13 +453,13 @@ function readLimits() {
 }
 
 // Live-Updates: SSE-Clients, die bei Änderungen unter PROJECTS_DIR benachrichtigt werden
-const sseClients = new Set();
+const sseClients = new Set<http.ServerResponse>();
 
-function notifyClients() {
+function notifyClients(): void {
   for (const res of sseClients) res.write("event: change\ndata: {}\n\n");
 }
 
-let watchDebounce = null;
+let watchDebounce: NodeJS.Timeout | undefined;
 try {
   fs.watch(PROJECTS_DIR, { recursive: true }, (_event, filename) => {
     if (filename && !filename.endsWith(".jsonl")) return;
@@ -340,7 +467,7 @@ try {
     watchDebounce = setTimeout(notifyClients, 1500);
   });
 } catch (err) {
-  console.warn("File-Watcher nicht verfügbar, Live-Updates deaktiviert:", err.message);
+  console.warn("File-Watcher nicht verfügbar, Live-Updates deaktiviert:", (err as Error).message);
 }
 
 // ~/.claude.json ändert sich, wenn Claude Code die Limit-Daten neu abruft
@@ -351,8 +478,16 @@ try {
   });
 } catch {}
 
+const MIME: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+};
+
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://localhost:${PORT}`);
+  const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
 
   if (url.pathname === "/api/events") {
     res.writeHead(200, {
@@ -371,12 +506,17 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (url.pathname === "/api/limits") {
-    let data;
+    let data: LimitsPayload | null;
     try {
       data = await fetchLiveLimits();
     } catch {
-      data = readLimits();
-      if (data) data.limits = withPredictions(data.limits);
+      // Letzter guter Live-Stand ist frischer als Claude Codes eigener Cache
+      if (liveLimitsCache.data) {
+        data = { ...liveLimitsCache.data, source: "cache" };
+      } else {
+        data = readLimits();
+        if (data) data.limits = withPredictions(data.limits);
+      }
     }
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify(data));

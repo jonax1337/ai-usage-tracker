@@ -1,12 +1,13 @@
 {
   "name": "claude-usage-tracker",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Local zero-dependency dashboard for Claude Code token usage, costs, plan limits, and pace predictions",
   "type": "module",
-  "main": "server.js",
+  "main": "server.ts",
   "scripts": {
-    "start": "node server.js",
-    "check": "node --check server.js && node --check public/app.js"
+    "start": "node server.ts",
+    "build": "tsc -p tsconfig.web.json",
+    "check": "tsc -p tsconfig.json && tsc -p tsconfig.web.json --noEmit"
   },
   "keywords": [
     "claude",
@@ -15,7 +16,8 @@
     "tokens",
     "dashboard",
     "rate-limits",
-    "local-first"
+    "local-first",
+    "typescript"
   ],
   "author": "Jonas Laux",
   "license": "MIT",
@@ -24,6 +26,10 @@
     "url": "git+https://github.com/jonax1337/claude-usage-tracker.git"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=23.6"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
   }
 }

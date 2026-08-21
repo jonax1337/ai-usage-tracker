@@ -3,6 +3,22 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [SemVer](https://semver.org/).
 
+## [1.1.0] - 2026-08-21
+
+### Added
+
+- Live model pricing from the LiteLLM price database (daily refresh, disk cache, built-in fallback table); pricing source shown in the footer
+- Dashboard screenshot in the README
+
+### Changed
+
+- **Migrated to TypeScript** (strict mode): `server.ts` runs natively via Node's type stripping (requires Node ≥ 23.6); frontend source moved to `src/app.ts`, compiled `public/app.js` stays committed for clone-and-run
+- Limits fetch now backs off after errors (60 s cache, cooldown on 429) and serves the last good live snapshot instead of stale data
+
+### Fixed
+
+- Y-axis tick labels were clipped on the cost chart
+
 ## [1.0.0] - 2026-08-21
 
 ### Added

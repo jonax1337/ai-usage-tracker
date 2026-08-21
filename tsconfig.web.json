@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "none",
+    "lib": ["es2022", "dom", "dom.iterable"],
+    "strict": true,
+    "outDir": "public",
+    "removeComments": false,
+    "skipLibCheck": true
+  },
+  "include": ["src/app.ts"]
+}

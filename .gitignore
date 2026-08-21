@@ -1,5 +1,6 @@
 # Runtime state (contains your personal usage history)
 pace-history.json
+pricing-cache.json
 
 # Node
 node_modules/
