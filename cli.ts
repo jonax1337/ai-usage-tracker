@@ -144,16 +144,18 @@ function setTitle(title: string): void {
 function titleFor(limits: Awaited<ReturnType<typeof getLimits>>): string {
   if (!limits) return "📊 Claude Usage";
   const ls = limits.limits as PredictedLimit[];
-  const worst = ls.some((l) => l.severity !== "normal" || l.percent >= 90)
+  // Title tracks session + overall weekly only; model-scoped limits (e.g. Fable) stay out
+  const shown = ls.filter((l) => l.kind === "session" || l.kind === "weekly_all");
+  const worst = shown.some((l) => l.severity !== "normal" || l.percent >= 90)
     ? "🔴"
-    : ls.some((l) => l.percent >= 70)
+    : shown.some((l) => l.percent >= 70)
       ? "🟡"
       : "🟢";
-  const session = ls.find((l) => l.kind === "session");
-  const weekMax = Math.max(...ls.filter((l) => l.kind !== "session").map((l) => l.percent), 0);
+  const session = shown.find((l) => l.kind === "session");
+  const week = shown.find((l) => l.kind === "weekly_all");
   const parts = [
     session ? `${session.percent}% session` : null,
-    weekMax > 0 ? `${weekMax}% week` : null,
+    week ? `${week.percent}% week` : null,
   ].filter(Boolean);
   return `${worst} ${parts.join(" · ")} — Claude Usage`;
 }
