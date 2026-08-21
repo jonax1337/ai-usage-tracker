@@ -3,6 +3,20 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [SemVer](https://semver.org/).
 
+## [1.2.0] - 2026-08-21
+
+### Added
+
+- **CLI mode** (`npm run cli`): self-refreshing terminal widget showing plan limits with colored meters, pace predictions, and today's cost
+- Donut chart next to the bar chart: cost share by model with center total and per-segment tooltips
+- Phosphor icons on card headers and the popout button, now styled as the primary action ("Float widget")
+
+### Changed
+
+- UI translated to English (en-US number and date formats)
+- Data layer extracted into `lib.ts`, shared between the web server and the CLI
+- Limits fallback picks the freshest available source (live snapshot on disk, pace-history reconstruction, or Claude Code's cache)
+
 ## [1.1.0] - 2026-08-21
 
 ### Added

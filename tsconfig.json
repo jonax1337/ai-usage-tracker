@@ -7,9 +7,10 @@
     "types": ["node"],
     "strict": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "erasableSyntaxOnly": true,
     "verbatimModuleSyntax": true,
     "skipLibCheck": true
   },
-  "include": ["server.ts"]
+  "include": ["server.ts", "lib.ts", "cli.ts"]
 }
