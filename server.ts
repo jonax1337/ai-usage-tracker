@@ -401,8 +401,17 @@ function withPredictions(limits: LimitInfo[]): PredictedLimit[] {
   });
 }
 
+// Letzter guter Live-Stand, auf Disk persistiert — überlebt Server-Neustarts,
+// damit ein 429-Cooldown nicht auf uralte Daten zurückwirft.
+const LIMITS_CACHE = path.join(BASE_DIR, "limits-cache.json");
+
 let liveLimitsCache: { at: number; data: LimitsPayload | null } = { at: 0, data: null };
 let limitsCooldownUntil = 0; // Backoff nach Fehlern (z. B. 429 vom Usage-Endpoint)
+
+try {
+  const saved = JSON.parse(fs.readFileSync(LIMITS_CACHE, "utf8")) as LimitsPayload;
+  liveLimitsCache = { at: 0, data: saved }; // at: 0 → nächster Abruf versucht sofort live
+} catch {}
 
 async function fetchLiveLimits(): Promise<LimitsPayload | null> {
   if (Date.now() - liveLimitsCache.at < 60_000) return liveLimitsCache.data;
@@ -429,12 +438,28 @@ async function fetchLiveLimits(): Promise<LimitsPayload | null> {
     limits: withPredictions(limits),
   };
   liveLimitsCache = { at: Date.now(), data };
+  fs.writeFile(LIMITS_CACHE, JSON.stringify(data), () => {});
   return data;
 }
 
 // Auch ohne offenes Dashboard weiter sampeln, damit die Pace-Historie dicht bleibt
 setInterval(() => fetchLiveLimits().catch(() => {}), 5 * 60 * 1000);
 fetchLiveLimits().catch(() => {});
+
+// Fallback-Kandidat: Claude Codes Cache-Metadaten, aber mit den Prozentwerten
+// aus dem jüngsten Pace-Sample (das bei jedem erfolgreichen Live-Fetch entsteht).
+function limitsFromHistory(): LimitsPayload | null {
+  const base = readLimits();
+  const last = paceHistory[paceHistory.length - 1];
+  if (!base || !last || last.t <= base.fetchedAtMs) return null;
+  return {
+    ...base,
+    fetchedAtMs: last.t,
+    limits: base.limits.map((l) =>
+      last.values[limitKey(l)] != null ? { ...l, percent: last.values[limitKey(l)] } : l,
+    ),
+  };
+}
 
 function readLimits(): LimitsPayload | null {
   try {
@@ -510,13 +535,15 @@ const server = http.createServer(async (req, res) => {
     try {
       data = await fetchLiveLimits();
     } catch {
-      // Letzter guter Live-Stand ist frischer als Claude Codes eigener Cache
-      if (liveLimitsCache.data) {
-        data = { ...liveLimitsCache.data, source: "cache" };
-      } else {
-        data = readLimits();
-        if (data) data.limits = withPredictions(data.limits);
-      }
+      // Frischeste verfügbare Quelle gewinnt: letzter Live-Stand (RAM/Disk)
+      // vs. Claude Codes eigener Cache in ~/.claude.json
+      const candidates = [liveLimitsCache.data, limitsFromHistory(), readLimits()].filter(
+        (c): c is LimitsPayload => c != null,
+      );
+      const best = candidates.sort((a, b) => b.fetchedAtMs - a.fetchedAtMs)[0] ?? null;
+      data = best
+        ? { ...best, source: "cache", limits: withPredictions(best.limits) }
+        : null;
     }
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify(data));
