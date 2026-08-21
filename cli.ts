@@ -145,19 +145,15 @@ function titleFor(limits: Awaited<ReturnType<typeof getLimits>>): string {
   if (!limits) return "📊 Claude Usage";
   const ls = limits.limits as PredictedLimit[];
   // Title tracks session + overall weekly only; model-scoped limits (e.g. Fable) stay out
-  const shown = ls.filter((l) => l.kind === "session" || l.kind === "weekly_all");
-  const worst = shown.some((l) => l.severity !== "normal" || l.percent >= 90)
-    ? "🔴"
-    : shown.some((l) => l.percent >= 70)
-      ? "🟡"
-      : "🟢";
-  const session = shown.find((l) => l.kind === "session");
-  const week = shown.find((l) => l.kind === "weekly_all");
+  const dot = (l: PredictedLimit): string =>
+    l.severity !== "normal" || l.percent >= 90 ? "🔴" : l.percent >= 70 ? "🟡" : "🟢";
+  const session = ls.find((l) => l.kind === "session");
+  const week = ls.find((l) => l.kind === "weekly_all");
   const parts = [
-    session ? `${session.percent}% session` : null,
-    week ? `${week.percent}% week` : null,
+    session ? `${dot(session)} ${session.percent}% session` : null,
+    week ? `${dot(week)} ${week.percent}% week` : null,
   ].filter(Boolean);
-  return `${worst} ${parts.join(" · ")} — Claude Usage`;
+  return parts.length ? `${parts.join(" · ")} — Claude Usage` : "📊 Claude Usage";
 }
 
 async function frame(): Promise<string> {
