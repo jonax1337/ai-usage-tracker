@@ -1,13 +1,15 @@
 "use strict";
 // Quelle des Frontends — wird mit `npm run build` nach public/app.js kompiliert.
 const SLOT_VARS = ["--series-1", "--series-2", "--series-3", "--series-4", "--series-5", "--series-6", "--series-7", "--series-8"];
-const OTHER = "Andere";
-const fmtCost = new Intl.NumberFormat("de-DE", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
-const fmtTick = new Intl.NumberFormat("de-DE", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
-const fmtCostFine = new Intl.NumberFormat("de-DE", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 4 });
-const fmtTokens = new Intl.NumberFormat("de-DE", { notation: "compact", maximumFractionDigits: 1 });
-const fmtInt = new Intl.NumberFormat("de-DE");
-const fmtDay = new Intl.DateTimeFormat("de-DE", { weekday: "short", day: "numeric", month: "short" });
+const OTHER = "Other";
+const LOCALE = "en-US";
+const fmtCost = new Intl.NumberFormat(LOCALE, { style: "currency", currency: "USD", maximumFractionDigits: 2 });
+const fmtTick = new Intl.NumberFormat(LOCALE, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+const fmtCostFine = new Intl.NumberFormat(LOCALE, { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 4 });
+const fmtTokens = new Intl.NumberFormat(LOCALE, { notation: "compact", maximumFractionDigits: 1 });
+const fmtInt = new Intl.NumberFormat(LOCALE);
+const fmtDay = new Intl.DateTimeFormat(LOCALE, { weekday: "short", month: "short", day: "numeric" });
+const fmtPct = new Intl.NumberFormat(LOCALE, { style: "percent", maximumFractionDigits: 1 });
 const state = { rangeDays: 30, data: null, slots: new Map(), live: false };
 const $ = (id) => document.getElementById(id);
 function modelLabel(id) {
@@ -69,6 +71,7 @@ function render() {
     const sessions = state.data.sessions.filter((s) => inRange(s.date, from));
     renderTiles(rows, sessions);
     renderChart(rows);
+    renderDonut(rows);
     renderTables(rows);
 }
 function renderTiles(rows, sessions) {
@@ -78,10 +81,10 @@ function renderTiles(rows, sessions) {
     const sessionSum = sessions.reduce((a, s) => a + s.count, 0);
     const dayCount = new Set(rows.map((r) => r.date)).size || 1;
     const tiles = [
-        ["Kosten (Listenpreis)", fmtCost.format(costSum), `Ø ${fmtCost.format(costSum / dayCount)} pro aktivem Tag`],
-        ["Tokens gesamt", fmtTokens.format(tokenSum), `davon ${fmtTokens.format(outputSum)} Output`],
-        ["Sessions", fmtInt.format(sessionSum), `an ${fmtInt.format(dayCount)} aktiven Tagen`],
-        ["Modelle", fmtInt.format(new Set(rows.map((r) => r.model)).size), "im gewählten Zeitraum"],
+        ["Cost (list price)", fmtCost.format(costSum), `avg ${fmtCost.format(costSum / dayCount)} per active day`],
+        ["Total tokens", fmtTokens.format(tokenSum), `${fmtTokens.format(outputSum)} of it output`],
+        ["Sessions", fmtInt.format(sessionSum), `across ${fmtInt.format(dayCount)} active days`],
+        ["Models", fmtInt.format(new Set(rows.map((r) => r.model)).size), "in the selected range"],
     ];
     $("tiles").innerHTML = tiles
         .map(() => `<div class="tile"><div class="label"></div><div class="value"></div><div class="delta"></div></div>`)
@@ -202,7 +205,7 @@ function renderChart(rows) {
         const labelEvery = Math.ceil(days.length / 10);
         if (i % labelEvery === 0) {
             const t = el("text", { x: x + barW / 2, y: H - 8, "text-anchor": "middle" });
-            t.textContent = new Date(day + "T00:00:00").toLocaleDateString("de-DE", { day: "numeric", month: "short" });
+            t.textContent = new Date(day + "T00:00:00").toLocaleDateString(LOCALE, { month: "short", day: "numeric" });
             svg.append(t);
         }
         // Hover-Ziel: die ganze Spalte, größer als die Marke selbst
@@ -242,7 +245,7 @@ function showTooltip(ev, day, dm, series) {
     if (total === 0) {
         const row = document.createElement("div");
         row.className = "tt-name";
-        row.textContent = "Keine Nutzung";
+        row.textContent = "No usage";
         tt.append(row);
     }
     else {
@@ -253,11 +256,14 @@ function showTooltip(ev, day, dm, series) {
         val.textContent = fmtCostFine.format(total);
         const name = document.createElement("span");
         name.className = "tt-name";
-        name.textContent = "gesamt";
+        name.textContent = "total";
         sum.append(val, name);
         tt.append(sum);
     }
-    // position: fixed — der Tooltip lebt im Viewport und wird nie von der Card beschnitten
+    placeTooltip(tt, ev);
+}
+// position: fixed — the tooltip lives in the viewport and is never clipped by a card
+function placeTooltip(tt, ev) {
     tt.hidden = false;
     let x = ev.clientX + 14;
     let yPos = ev.clientY + 14;
@@ -270,6 +276,109 @@ function showTooltip(ev, day, dm, series) {
 }
 function hideTooltip() {
     $("tooltip").hidden = true;
+}
+// Donut: cost share per model in the selected range (same colors as the bar chart)
+function renderDonut(rows) {
+    const svg = $("donut");
+    svg.innerHTML = "";
+    const totals = new Map();
+    for (const r of rows) {
+        const m = foldModel(r.model);
+        totals.set(m, (totals.get(m) ?? 0) + r.cost);
+    }
+    const series = [...state.slots.keys()].filter((m) => totals.has(m));
+    if (totals.has(OTHER))
+        series.push(OTHER);
+    const total = series.reduce((a, m) => a + (totals.get(m) ?? 0), 0);
+    const ns = "http://www.w3.org/2000/svg";
+    const cx = 110;
+    const cy = 110;
+    const radius = 82;
+    const stroke = 27;
+    if (total <= 0) {
+        const t = document.createElementNS(ns, "text");
+        t.setAttribute("x", String(cx));
+        t.setAttribute("y", String(cy));
+        t.setAttribute("text-anchor", "middle");
+        t.setAttribute("class", "donut-center-label");
+        t.textContent = "No usage";
+        svg.append(t);
+        return;
+    }
+    const polar = (angle) => [
+        cx + radius * Math.cos(angle - Math.PI / 2),
+        cy + radius * Math.sin(angle - Math.PI / 2),
+    ];
+    const attachTip = (el, name, value) => {
+        el.addEventListener("pointermove", (ev) => showDonutTip(ev, name, value, total));
+        el.addEventListener("pointerleave", hideTooltip);
+    };
+    if (series.length === 1) {
+        // A single segment is a full ring — no arc gaps needed
+        const circle = document.createElementNS(ns, "circle");
+        circle.setAttribute("cx", String(cx));
+        circle.setAttribute("cy", String(cy));
+        circle.setAttribute("r", String(radius));
+        circle.setAttribute("fill", "none");
+        circle.setAttribute("stroke", seriesColor(series[0]));
+        circle.setAttribute("stroke-width", String(stroke));
+        circle.setAttribute("class", "seg");
+        attachTip(circle, series[0], total);
+        svg.append(circle);
+    }
+    else {
+        // 2px surface gap between segments, expressed as an angle at this radius
+        const gapAngle = 2 / radius;
+        let angle = 0;
+        for (const m of series) {
+            const value = totals.get(m) ?? 0;
+            const sweep = (value / total) * Math.PI * 2;
+            const a0 = angle + gapAngle / 2;
+            const a1 = Math.max(angle + sweep - gapAngle / 2, a0 + 0.005);
+            const [x0, y0] = polar(a0);
+            const [x1, y1] = polar(a1);
+            const largeArc = a1 - a0 > Math.PI ? 1 : 0;
+            const path = document.createElementNS(ns, "path");
+            path.setAttribute("d", `M ${x0} ${y0} A ${radius} ${radius} 0 ${largeArc} 1 ${x1} ${y1}`);
+            path.setAttribute("fill", "none");
+            path.setAttribute("stroke", seriesColor(m));
+            path.setAttribute("stroke-width", String(stroke));
+            attachTip(path, m, value);
+            svg.append(path);
+            angle += sweep;
+        }
+    }
+    const centerValue = document.createElementNS(ns, "text");
+    centerValue.setAttribute("x", String(cx));
+    centerValue.setAttribute("y", String(cy - 1));
+    centerValue.setAttribute("text-anchor", "middle");
+    centerValue.setAttribute("class", "donut-center-value");
+    centerValue.textContent = fmtCost.format(total);
+    const centerLabel = document.createElementNS(ns, "text");
+    centerLabel.setAttribute("x", String(cx));
+    centerLabel.setAttribute("y", String(cy + 18));
+    centerLabel.setAttribute("text-anchor", "middle");
+    centerLabel.setAttribute("class", "donut-center-label");
+    centerLabel.textContent = "total";
+    svg.append(centerValue, centerLabel);
+}
+function showDonutTip(ev, model, value, total) {
+    const tt = $("tooltip");
+    tt.innerHTML = "";
+    const row = document.createElement("div");
+    row.className = "tt-row";
+    const key = document.createElement("span");
+    key.className = "tt-key";
+    key.style.background = seriesColor(model);
+    const val = document.createElement("span");
+    val.className = "tt-value";
+    val.textContent = fmtCost.format(value);
+    const name = document.createElement("span");
+    name.className = "tt-name";
+    name.textContent = `${model === OTHER ? OTHER : modelLabel(model)} · ${fmtPct.format(value / total)}`;
+    row.append(key, val, name);
+    tt.append(row);
+    placeTooltip(tt, ev);
 }
 function renderTables(rows) {
     const byProject = new Map();
@@ -323,9 +432,9 @@ function renderTables(rows) {
     }
 }
 const LIMIT_NAMES = {
-    session: "Aktuelle Session (5 h)",
-    weekly_all: "Woche · alle Modelle",
-    weekly_scoped: "Woche",
+    session: "Current session (5 h)",
+    weekly_all: "Week · all models",
+    weekly_scoped: "Week",
 };
 function limitName(l) {
     const base = LIMIT_NAMES[l.kind] ?? l.kind;
@@ -336,10 +445,10 @@ function fmtReset(iso) {
         return "";
     const d = new Date(iso);
     const sameDay = d.toDateString() === new Date().toDateString();
-    const time = d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+    const time = d.toLocaleTimeString(LOCALE, { hour: "numeric", minute: "2-digit" });
     return sameDay
-        ? `Reset heute um ${time} Uhr`
-        : `Reset ${d.toLocaleDateString("de-DE", { weekday: "short", day: "numeric", month: "short" })}, ${time} Uhr`;
+        ? `Resets today at ${time}`
+        : `Resets ${d.toLocaleDateString(LOCALE, { weekday: "short", month: "short", day: "numeric" })}, ${time}`;
 }
 function renderLimits(data) {
     const card = $("limitsCard");
@@ -350,7 +459,7 @@ function renderLimits(data) {
     card.hidden = false;
     const freshness = data.source === "live"
         ? "live"
-        : `Stand ${new Date(data.fetchedAtMs).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })} Uhr (Cache)`;
+        : `as of ${new Date(data.fetchedAtMs).toLocaleTimeString(LOCALE, { hour: "numeric", minute: "2-digit" })} (cached)`;
     $("limitsMeta").textContent = `${data.plan ? data.plan + " · " : ""}${freshness}`;
     const wrap = $("limits");
     wrap.innerHTML = "";
@@ -383,41 +492,41 @@ function renderLimits(data) {
         pred.className = "limit-pred";
         const fmtWhen = (ms) => {
             const d = new Date(ms);
-            const time = d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+            const time = d.toLocaleTimeString(LOCALE, { hour: "numeric", minute: "2-digit" });
             return d.toDateString() === new Date().toDateString()
-                ? `heute gegen ~${time} Uhr`
-                : `${d.toLocaleDateString("de-DE", { weekday: "short" })} gegen ~${time} Uhr`;
+                ? `today around ~${time}`
+                : `${d.toLocaleDateString(LOCALE, { weekday: "short" })} around ~${time}`;
         };
         if (l.pacePerHour == null) {
             pred.textContent = l.isSession
-                ? "Pace wird ermittelt …"
-                : "Ø-Pace wird ermittelt, braucht ~12 h Historie";
+                ? "Measuring pace …"
+                : "Measuring avg pace, needs ~12 h of history";
         }
         else if (l.pacePerHour <= 0.01) {
-            pred.textContent = "Aktuell kein nennenswerter Verbrauch";
+            pred.textContent = "No meaningful usage right now";
         }
         else if (l.isSession) {
-            const paceTxt = `${l.pacePerHour.toFixed(1).replace(".", ",")} %/h`;
+            const paceTxt = `${l.pacePerHour.toFixed(1)} %/h`;
             if (l.exhaustsBeforeReset && l.exhaustsAtMs != null) {
                 pred.classList.add("pred-warn");
-                pred.textContent = `${paceTxt} · bei diesem Tempo erschöpft ${fmtWhen(l.exhaustsAtMs)}, vor dem Reset`;
+                pred.textContent = `${paceTxt} · at this pace, exhausted ${fmtWhen(l.exhaustsAtMs)}, before the reset`;
             }
             else {
-                pred.textContent = `${paceTxt} · reicht bei diesem Tempo bis zum Reset`;
+                pred.textContent = `${paceTxt} · lasts until the reset at this pace`;
             }
         }
         else {
-            // Weekly: Ø-Pace über 72 h — kurze Bursts deckelt ohnehin das Session-Limit
-            const paceTxt = `Ø ${l.pacePerHour.toFixed(1).replace(".", ",")} %/h (72-h-Schnitt)`;
+            // Weekly: 72-h average — short bursts are capped by the session limit anyway
+            const paceTxt = `avg ${l.pacePerHour.toFixed(1)} %/h (72-h)`;
             if (l.projectedAtReset == null) {
                 pred.textContent = paceTxt;
             }
             else if (l.projectedAtReset >= 100 && l.exhaustsAtMs != null) {
                 pred.classList.add("pred-warn");
-                pred.textContent = `${paceTxt} · hochgerechnet am Limit ${fmtWhen(l.exhaustsAtMs)}`;
+                pred.textContent = `${paceTxt} · projected to hit the limit ${fmtWhen(l.exhaustsAtMs)}`;
             }
             else {
-                pred.textContent = `${paceTxt} · hochgerechnet ~${l.projectedAtReset} % beim Reset`;
+                pred.textContent = `${paceTxt} · projected ~${l.projectedAtReset} % at reset`;
             }
         }
         el.append(head, meter, reset, pred);
@@ -433,8 +542,8 @@ function setSubtitle() {
     dot.className = "live-dot" + (state.live ? " on" : "");
     const text = document.createElement("span");
     text.textContent =
-        `${state.live ? "Live" : "Offline"} · ${fmtInt.format(state.data.rows.length)} Datenpunkte · ` +
-            `Stand ${new Date(state.data.generatedAt).toLocaleTimeString("de-DE")}`;
+        `${state.live ? "Live" : "Offline"} · ${fmtInt.format(state.data.rows.length)} data points · ` +
+            `updated ${new Date(state.data.generatedAt).toLocaleTimeString(LOCALE)}`;
     sub.append(dot, text);
 }
 async function load() {
@@ -446,8 +555,8 @@ async function load() {
     render();
     const p = state.data.pricing;
     $("pricingMeta").textContent = p?.source === "live" && p.fetchedAt
-        ? ` · Preise: live (LiteLLM, ${new Date(p.fetchedAt).toLocaleDateString("de-DE")})`
-        : " · Preise: eingebaute Tabelle";
+        ? ` · Pricing: live (LiteLLM, ${new Date(p.fetchedAt).toLocaleDateString(LOCALE)})`
+        : " · Pricing: built-in table";
 }
 async function refreshLimits() {
     try {
@@ -513,5 +622,5 @@ window.addEventListener("resize", () => {
     renderChart(state.data.rows.filter((r) => inRange(r.date, rangeStart())));
 });
 load().catch((err) => {
-    $("subtitle").textContent = `Fehler beim Laden: ${err}`;
+    $("subtitle").textContent = `Failed to load: ${err}`;
 });

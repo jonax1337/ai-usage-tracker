@@ -106,11 +106,11 @@ async function refreshPricing(): Promise<void> {
   if (Object.keys(models).length === 0) throw new Error("pricing data empty");
   livePricing = { fetchedAt: Date.now(), models };
   fs.writeFile(PRICING_CACHE, JSON.stringify(livePricing), () => {});
-  console.log(`Preise aktualisiert: ${Object.keys(models).length} Claude-Modelle (LiteLLM)`);
+  console.log(`Pricing refreshed: ${Object.keys(models).length} Claude models (LiteLLM)`);
 }
 
 refreshPricing().catch((err) =>
-  console.warn("Live-Preise nicht verfügbar, nutze Fallback:", (err as Error).message),
+  console.warn("Live pricing unavailable, using fallback:", (err as Error).message),
 );
 setInterval(() => refreshPricing().catch(() => {}), 24 * 3600 * 1000);
 
@@ -492,7 +492,7 @@ try {
     watchDebounce = setTimeout(notifyClients, 1500);
   });
 } catch (err) {
-  console.warn("File-Watcher nicht verfügbar, Live-Updates deaktiviert:", (err as Error).message);
+  console.warn("File watcher unavailable, live updates disabled:", (err as Error).message);
 }
 
 // ~/.claude.json ändert sich, wenn Claude Code die Limit-Daten neu abruft
@@ -576,5 +576,5 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Claude Usage Tracker → http://localhost:${PORT}`);
-  console.log(`Datenquelle: ${PROJECTS_DIR}`);
+  console.log(`Data source: ${PROJECTS_DIR}`);
 });
