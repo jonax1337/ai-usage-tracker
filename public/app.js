@@ -96,15 +96,16 @@ function renderTiles(rows, sessions) {
     const sessionSum = sessions.reduce((a, s) => a + s.count, 0);
     const dayCount = new Set(rows.map((r) => r.date)).size || 1;
     const tiles = [
-        ["Cost (list price)", fmtCost.format(costSum), `avg ${fmtCost.format(costSum / dayCount)} per active day`],
-        ["Total tokens", fmtTokens.format(tokenSum), `${fmtTokens.format(outputSum)} of it output`],
-        ["Sessions", fmtInt.format(sessionSum), `across ${fmtInt.format(dayCount)} active days`],
-        ["Models", fmtInt.format(new Set(rows.map((r) => r.model)).size), "in the selected range"],
+        ["Cost (list price)", fmtCost.format(costSum), `avg ${fmtCost.format(costSum / dayCount)} per active day`, "ph-currency-dollar"],
+        ["Total tokens", fmtTokens.format(tokenSum), `${fmtTokens.format(outputSum)} of it output`, "ph-database"],
+        ["Sessions", fmtInt.format(sessionSum), `across ${fmtInt.format(dayCount)} active days`, "ph-lightning"],
+        ["Models", fmtInt.format(new Set(rows.map((r) => r.model)).size), "in the selected range", "ph-cpu"],
     ];
     $("tiles").innerHTML = tiles
-        .map(() => `<div class="tile"><div class="label"></div><div class="value"></div><div class="delta"></div></div>`)
+        .map(() => `<div class="tile"><div class="tile-icon"><i class="ph"></i></div><div class="tile-body"><div class="label"></div><div class="value"></div><div class="delta"></div></div></div>`)
         .join("");
     document.querySelectorAll("#tiles .tile").forEach((el, i) => {
+        el.querySelector(".tile-icon i").className = `ph ${tiles[i][3]}`;
         el.querySelector(".label").textContent = tiles[i][0];
         el.querySelector(".value").textContent = tiles[i][1];
         el.querySelector(".delta").textContent = tiles[i][2];
@@ -610,8 +611,8 @@ $("popoutBtn").addEventListener("click", async () => {
         try {
             const pip = await documentPictureInPicture.requestWindow({ width: 360, height: 300 });
             const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-            pip.document.documentElement.style.background = dark ? "#0d0d0d" : "#f9f9f7";
-            pip.document.body.style.cssText = `margin:0;overflow:hidden;background:${dark ? "#0d0d0d" : "#f9f9f7"}`;
+            pip.document.documentElement.style.background = dark ? "#08090a" : "#f7f7f8";
+            pip.document.body.style.cssText = `margin:0;overflow:hidden;background:${dark ? "#08090a" : "#f7f7f8"}`;
             const iframe = pip.document.createElement("iframe");
             iframe.src = url;
             iframe.style.cssText = "border:0;width:100vw;height:100vh;display:block";

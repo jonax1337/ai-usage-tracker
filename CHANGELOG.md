@@ -3,6 +3,16 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [SemVer](https://semver.org/).
 
+## [1.6.0] - 2026-08-30
+
+### Changed
+
+- **Full visual redesign**, dark-mode-first, Linear-inspired: near-black canvas (`#08090a`) as the primary target with light mode as a fully-supported secondary variant (both driven by `prefers-color-scheme`, no manual toggle). Hierarchy now comes from white-opacity luminance steps (`--surface-1/2/3`) rather than flat gray jumps, borders are ultra-thin and semi-transparent, and a single restrained indigo accent (`--accent`) is reserved for genuinely interactive/active elements only.
+- **Header restructured into a compact sticky topbar**: icon brand mark + title/live-subtitle on the left, the time-range filter pills and the popout control grouped together on the right as a single toolbar, instead of a separate header row and a separate filter row.
+- **The "Float widget" popout control was redesigned from a bright blue pill button into a small ghost icon button** (`.icon-btn`) that matches the rest of the toolbar — it no longer looks like a bolted-on CTA. The underlying Picture-in-Picture / fallback-window launch logic is unchanged, only its trigger's appearance and placement changed.
+- Cards, tiles, tables, chart legend/tooltip, and plan-limit meters were all restyled to match the new dark-first language (still hand-drawn SVG charts, same 8-slot CVD-safe `--series-1..8` palette, same `assignSlots()` color-assignment logic — only the surrounding chrome changed).
+- No changes to the data layer: `server.ts`, `lib.ts`, `hermes.ts`, `cli.ts`, the `/api/usage` and `/api/limits` response shapes, and the SSE live-update mechanism are all untouched.
+
 ## [1.5.1] - 2026-08-30
 
 ### Changed
