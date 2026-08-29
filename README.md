@@ -1,6 +1,6 @@
 # Claude Usage Tracker
 
-A local, zero-dependency dashboard for your [Claude Code](https://claude.com/claude-code) token usage, costs, and plan limits — with live updates, pace predictions, and a floating picture-in-picture widget.
+A local, zero-dependency dashboard for your [Claude Code](https://claude.com/claude-code) (and, optionally, [Hermes Agent](https://github.com/NousResearch/hermes-agent)) token usage, costs, and plan limits — with live updates, pace predictions, and a floating picture-in-picture widget.
 
 ![Node.js >= 23.6](https://img.shields.io/badge/node-%3E%3D23.6-brightgreen)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue)
@@ -53,12 +53,42 @@ npm start               # Node >= 23.6 (runs the .ts natively)
 
 | Data | Source |
 |---|---|
-| Tokens & costs | `~/.claude/projects/**/*.jsonl` — Claude Code's session transcripts. Each assistant message carries a `usage` block (input, output, cache read/write tokens). Costs are computed at public API list prices, so they are informative even on a subscription plan. |
+| Tokens & costs (Claude Code CLI) | `~/.claude/projects/**/*.jsonl` — Claude Code's session transcripts. Each assistant message carries a `usage` block (input, output, cache read/write tokens). Costs are computed at public API list prices, so they are informative even on a subscription plan. |
+| Tokens & costs (Hermes Agent) | `session_model_usage` in Hermes's own `state.db` (`~/.hermes` or `%LOCALAPPDATA%\hermes`, `HERMES_HOME` env var respected), read-only. Hermes tracks every provider it bills against — Anthropic, zai, OpenAI-Codex, OpenRouter, whatever you've configured. Anthropic models (Claude, Opus, Sonnet, Fable) use the exact same model id Claude Code CLI transcripts use, so usage from both sources merges into one row per model — a Sonnet session run through Hermes and one run through the CLI show up as a single, combined cost/token total. Non-Anthropic providers (which Claude Code CLI can never produce) keep a `<provider>/<model>` prefix for clarity. The *source* (Claude Code CLI vs. Hermes Agent) stays visible in the "By project / source" table regardless. Requires Node ≥ 22.5 (`node:sqlite`); on older Node this source is skipped, everything else keeps working. |
+| Tokens & costs (other machines) | Optional JSON files dropped into `~/.claude-usage-tracker/external-usage/*.json` — see "Multi-machine usage" below. |
 | Plan limits | `https://api.anthropic.com/api/oauth/usage`, authenticated with the OAuth token Claude Code stores in `~/.claude/.credentials.json`. Falls back to Claude Code's own cache in `~/.claude.json` if the live fetch fails. |
 | Pace history | Sampled every 5 minutes and persisted to `pace-history.json` (gitignored) so predictions survive restarts. |
 | Model pricing | [LiteLLM price database](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json), refreshed daily and cached to `pricing-cache.json` (gitignored). Falls back to a built-in table when offline. |
 
 The server parses transcripts with per-file mtime caching and deduplicates streaming entries by message ID, so reloads stay fast even with large histories.
+
+## Multi-machine usage
+
+There's no server or sync daemon here on purpose — the tool stays local-first. Instead, each extra machine (a work laptop, a second desktop, whatever) writes its own usage as one JSON file, and you move that file however you already move files between your machines (Syncthing, a cloud-synced folder, `scp`, a USB stick):
+
+```json
+{
+  "machine": "work-laptop",
+  "rows": [
+    { "date": "2026-08-29", "project": "some-project", "model": "claude-sonnet-4-6", "input": 1200, "cacheWrite": 0, "cacheRead": 50000, "output": 3400, "cost": 0.42 }
+  ]
+}
+```
+
+Drop it at `~/.claude-usage-tracker/external-usage/<anything>.json` on the machine running the dashboard. Each `model` gets namespaced `<machine>:<model>` on merge, so it never collides with local rows and shows up in the model table/legend tagged with its machine.
+
+To produce one from another machine's local Claude Code transcripts without installing the dashboard there, run this on that machine (Node ≥ 20):
+
+```bash
+node -e "
+import('./lib.ts').then(async ({ collectUsage }) => {
+  const data = await collectUsage();
+  console.log(JSON.stringify({ machine: require('os').hostname(), rows: data.rows }));
+});
+" > usage-export.json
+```
+
+(or just `curl http://localhost:3789/api/usage` if the dashboard is already running there) — then copy `usage-export.json` into `external-usage/` on your main machine.
 
 ## CLI mode
 

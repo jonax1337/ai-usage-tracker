@@ -3,6 +3,29 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [SemVer](https://semver.org/).
 
+## [1.5.1] - 2026-08-30
+
+### Changed
+
+- **Visual refresh** (Linear/Vercel/Stripe-inspired polish, layout/structure unchanged): cards now use a shadow-as-border technique (`--shadow-card`/`--shadow-card-hover`/`--shadow-raised`/`--shadow-pop` custom properties) instead of a flat 1px border, with a coherent dark-mode counterpart built on Linear-style surface luminance stepping (`--surface-2`, `--ring`, `--ring-strong` step via white-opacity rather than jumping to a flat gray)
+- Tightened and evened out spacing rhythm across the page (root padding, tile grid gaps, card margins, table cell padding)
+- Table headers now uppercase with tracked letter-spacing; numeric cells (tiles, limit percentages) use `font-variant-numeric: tabular-nums` for aligned digits
+- Filter pills, popout button, and table rows got refined hover/active states and consistent 150–200ms transitions
+- Limit meter bars: fully rounded ends, smoother animated width transitions on refresh
+- Verified visual parity between light and dark mode, and that the popout/PiP widget mode still renders correctly
+
+## [1.5.0] - 2026-08-29
+
+### Added
+
+- **Hermes Agent as a usage source**: reads `session_model_usage` from Hermes's local `state.db` (`~/.hermes` or `%LOCALAPPDATA%\hermes`, `HERMES_HOME` override respected) and merges it into every chart/table alongside the Claude Code CLI transcripts. Anthropic models use identical raw model ids in both sources, so e.g. `claude-sonnet-5` usage from Hermes and from the CLI **combines into one row** in the model table/chart/donut — the source distinction (Claude Code CLI vs. Hermes Agent) stays visible one level up, in "By project / source". Non-Anthropic providers Hermes talks to (zai, OpenAI-Codex, OpenRouter, ...) that the CLI can never produce keep a `<provider>/<model>` prefix. Read-only; requires Node ≥ 22.5 for `node:sqlite`, degrades to Claude-Code-only silently on older Node.
+- **Multi-machine usage (low-effort path)**: drop a `{ machine, rows }` JSON file into `~/.claude-usage-tracker/external-usage/` (Syncthing, cloud-synced folder, `scp`, anything) and its rows merge in on next reload, namespaced `<machine>:<model>` so they never collide with local data. No server, no sync daemon, no auth — see README.
+
+### Changed
+
+- "By project" table/heading renamed to "By project / source" now that non-transcript sources (Hermes Agent, external machines) can appear there
+- Footer now lists all three usage sources instead of just `~/.claude/projects`
+
 ## [1.4.2] - 2026-08-21
 
 ### Changed

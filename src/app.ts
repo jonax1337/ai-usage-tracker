@@ -62,6 +62,21 @@ const state: AppState = { rangeDays: 30, data: null, slots: new Map(), live: fal
 const $ = (id: string): HTMLElement => document.getElementById(id)!;
 
 function modelLabel(id: string): string {
+  // External-machine rows are namespaced "<machine>:<model>" (lib.ts) and
+  // non-Anthropic Hermes rows "<provider>/<model>" (hermes.ts) — surface the
+  // source as a small prefix instead of leaking the raw namespaced id.
+  // Anthropic models (Claude Code CLI or Hermes) use the bare model id with
+  // no prefix, so usage for the same model merges into a single row here.
+  const externalMatch = id.match(/^([a-z0-9][\w.-]*):(.+)$/i);
+  if (externalMatch && !id.startsWith("claude-")) {
+    const [, machine, model] = externalMatch;
+    return `${modelLabel(model)} (${machine})`;
+  }
+  const providerMatch = id.match(/^([a-z0-9][\w.-]*)\/(.+)$/i);
+  if (providerMatch) {
+    const [, provider, model] = providerMatch;
+    return `${modelLabel(model)} (${provider})`;
+  }
   const parts = id.replace(/^claude-/, "").split("-").filter((p) => !/^\d{8}$/.test(p));
   const family = parts[0] ? parts[0][0].toUpperCase() + parts[0].slice(1) : id;
   const version = parts.slice(1).join(".");

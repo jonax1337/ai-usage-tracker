@@ -2,11 +2,20 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import readline from "node:readline";
+import { collectHermesUsage } from "./hermes.ts";
 
 const PROJECTS_DIR = path.join(os.homedir(), ".claude", "projects");
 // User-scoped state dir — a globally installed package must not write into itself
 export const STATE_DIR = path.join(os.homedir(), ".claude-usage-tracker");
 fs.mkdirSync(STATE_DIR, { recursive: true });
+
+// Multi-machine usage, the low-effort way: drop a JSON file per machine here
+// (Syncthing, a cloud-synced folder, scp, whatever moves bytes between your
+// PCs) and it merges straight into the dashboard on next load — no server,
+// no auth, no daemon. See README "Multi-machine usage" for the file format
+// and a one-liner to produce one from another PC's ~/.claude/projects.
+export const EXTERNAL_USAGE_DIR = path.join(STATE_DIR, "external-usage");
+fs.mkdirSync(EXTERNAL_USAGE_DIR, { recursive: true });
 
 export interface ModelPricing {
   input: number;
@@ -212,6 +221,40 @@ function projectLabel(dirName: string): string {
   return parts.length ? parts[parts.length - 1] : dirName;
 }
 
+interface ExternalUsageFile {
+  machine?: string;
+  rows: UsageRow[];
+}
+
+// Reads every *.json dropped into external-usage/. Each file is expected to
+// contain { machine: "work-laptop", rows: UsageRow[] } — the same shape
+// `collectUsage()` produces, so any other checkout of this project (or a
+// small export script) can just write its own `rows` array verbatim. The
+// model id gets namespaced with the source machine so it never collides
+// with local rows and stays attributable in the model table/legend.
+function collectExternalUsage(): UsageRow[] {
+  let files: string[] = [];
+  try {
+    files = fs.readdirSync(EXTERNAL_USAGE_DIR).filter((f) => f.endsWith(".json"));
+  } catch {
+    return [];
+  }
+  const out: UsageRow[] = [];
+  for (const file of files) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(path.join(EXTERNAL_USAGE_DIR, file), "utf8")) as ExternalUsageFile;
+      const machine = (parsed.machine || file.replace(/\.json$/, "")).trim() || "remote";
+      for (const r of parsed.rows ?? []) {
+        if (!r?.date || !r?.model) continue;
+        out.push({ ...r, project: r.project || machine, model: `${machine}:${r.model}` });
+      }
+    } catch (err) {
+      console.warn(`Skipping malformed external usage file ${file}:`, (err as Error).message);
+    }
+  }
+  return out;
+}
+
 export async function collectUsage() {
   const rows = new Map<string, UsageRow>();
   const sessionsByDay = new Map<string, Set<string>>();
@@ -222,7 +265,7 @@ export async function collectUsage() {
       .readdirSync(PROJECTS_DIR, { withFileTypes: true })
       .filter((d) => d.isDirectory());
   } catch {
-    return { rows: [], sessions: [] };
+    projectDirs = [];
   }
 
   for (const dir of projectDirs) {
@@ -257,6 +300,25 @@ export async function collectUsage() {
         sessionsByDay.get(date)!.add(sessionId);
       }
     }
+  }
+
+  // Hermes Agent — a second, independent usage source (its own state.db,
+  // its own providers). Rows arrive pre-aggregated per day/provider/model;
+  // fold them straight into the same map under a "Hermes Agent" project so
+  // every chart/table that already groups by project or model picks them up
+  // for free.
+  for (const r of await collectHermesUsage()) {
+    const key = `${r.date}|${r.project}|${r.model}`;
+    rows.set(key, r);
+  }
+
+  // Other machines' usage, dropped as JSON files into external-usage/ (see
+  // README) — the low-effort multi-PC path: no server, no sync daemon, just
+  // sync/copy a file however you like (Syncthing, cloud drive, scp) and the
+  // dashboard picks it up on next reload.
+  for (const r of collectExternalUsage()) {
+    const key = `${r.date}|${r.project}|${r.model}`;
+    rows.set(key, r);
   }
 
   return {
