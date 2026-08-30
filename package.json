@@ -1,10 +1,10 @@
 {
-  "name": "claude-code-usage-tracker",
-  "version": "1.6.0",
-  "description": "Local zero-dependency dashboard and CLI for Claude Code token usage, costs, plan limits, and pace predictions",
+  "name": "ai-usage-tracker",
+  "version": "1.7.0",
+  "description": "Local zero-dependency dashboard and CLI for multi-provider AI usage, costs, plan limits, and pace predictions (Claude Code, Codex, OpenRouter, Z.ai/GLM)",
   "type": "module",
   "bin": {
-    "claude-usage": "dist/cli.js"
+    "ai-usage": "dist/cli.js"
   },
   "files": [
     "dist",
@@ -22,9 +22,13 @@
     "prepublishOnly": "npm run check && npm run build && npm run build:node"
   },
   "keywords": [
-    "claude",
-    "claude-code",
+    "ai",
     "usage",
+    "claude",
+    "codex",
+    "openrouter",
+    "zai",
+    "glm",
     "tokens",
     "dashboard",
     "cli",
@@ -36,7 +40,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jonax1337/claude-usage-tracker.git"
+    "url": "git+https://github.com/jonax1337/ai-usage-tracker.git"
   },
   "engines": {
     "node": ">=20"

@@ -1,4 +1,4 @@
-# Claude Usage Tracker
+# AI Usage Tracker
 
 A local, zero-dependency dashboard for your [Claude Code](https://claude.com/claude-code) (and, optionally, [Hermes Agent](https://github.com/NousResearch/hermes-agent)) token usage, costs, and plan limits — with live updates, pace predictions, and a floating picture-in-picture widget.
 
@@ -12,8 +12,8 @@ A local, zero-dependency dashboard for your [Claude Code](https://claude.com/cla
 ## Features
 
 - **Usage analytics** — daily cost per model as a stacked bar chart, plus breakdowns by project and model, computed from your local Claude Code transcripts
-- **Live plan limits** — session (5 h) and weekly limits with progress meters, fetched live from Anthropic's OAuth usage endpoint using the token Claude Code already maintains
-- **Pace predictions** — burn rate per limit and an estimate of when it runs out. The session limit uses a short window ("at this pace, exhausted at ~09:50"), weekly limits use a 72-hour average including idle time, since bursts are capped by the session limit anyway
+- **Multi-provider live plan limits** — auto-detects every AI subscription/API credential present on the machine (Claude Code/Anthropic, OpenAI Codex/ChatGPT, OpenRouter, Z.ai/GLM Coding Plan) and shows each one's live rate-limit windows with progress meters, side by side — no manual config, a provider only appears once its credentials are found on disk
+- **Pace predictions** — burn rate per limit window and an estimate of when it runs out, per provider. Short windows (session, 5h) use a tight recent window ("at this pace, exhausted at ~09:50"), longer windows (weekly, plan cycle) use a 72-hour average including idle time
 - **Real-time updates** — a file watcher on `~/.claude/projects` pushes changes to the browser via Server-Sent Events; the chart ticks while your sessions run
 - **Popout widget** — a compact always-on-top mini window via the Document Picture-in-Picture API (Chromium). Grows responsively: wider windows reveal reset times and stat tiles
 - **CLI mode** — `npm run cli` renders the same limits, pace, and today's cost as a self-refreshing terminal widget
@@ -24,28 +24,28 @@ A local, zero-dependency dashboard for your [Claude Code](https://claude.com/cla
 ## Install
 
 ```bash
-npm install -g claude-code-usage-tracker
+npm install -g ai-usage-tracker
 ```
 
-That gives you the `claude-usage` command:
+That gives you the `ai-usage` command:
 
 ```bash
-claude-usage            # live terminal widget (limits, pace, today's cost)
-claude-usage serve      # web dashboard in the foreground
-claude-usage start      # web dashboard as a background daemon
-claude-usage stop       # stop the daemon
-claude-usage status     # is the daemon running?
+ai-usage            # live terminal widget (limits, pace, today's cost)
+ai-usage serve      # web dashboard in the foreground
+ai-usage start      # web dashboard as a background daemon
+ai-usage stop       # stop the daemon
+ai-usage status     # is the daemon running?
 ```
 
-Open **http://localhost:3789** once the dashboard runs (`PORT` env var to change). State and logs live in `~/.claude-usage-tracker/`.
+Open **http://localhost:3789** once the dashboard runs (`PORT` env var to change). State and logs live in `~/.ai-usage-tracker/` (legacy `~/.claude-usage-tracker/` is still read as a fallback).
 
 Requirements: Node.js ≥ 20 and a machine where Claude Code has been used (transcripts in `~/.claude/projects`).
 
 ### From source
 
 ```bash
-git clone https://github.com/jonax1337/claude-usage-tracker.git
-cd claude-usage-tracker
+git clone https://github.com/jonax1337/ai-usage-tracker.git
+cd ai-usage-tracker
 npm start               # Node >= 23.6 (runs the .ts natively)
 ```
 
@@ -95,7 +95,7 @@ import('./lib.ts').then(async ({ collectUsage }) => {
 A live terminal widget that keeps re-rendering in place — plan limits with colored meters, pace predictions, and today's cost:
 
 ```bash
-claude-usage            # (or npm run cli from a checkout)
+ai-usage            # (or npm run cli from a checkout)
 ```
 
 ```

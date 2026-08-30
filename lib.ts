@@ -5,9 +5,21 @@ import readline from "node:readline";
 import { collectHermesUsage } from "./hermes.ts";
 
 const PROJECTS_DIR = path.join(os.homedir(), ".claude", "projects");
-// User-scoped state dir — a globally installed package must not write into itself
-export const STATE_DIR = path.join(os.homedir(), ".claude-usage-tracker");
-fs.mkdirSync(STATE_DIR, { recursive: true });
+// User-scoped state dir — a globally installed package must not write into itself.
+// Renamed with v1.7.0 (was ~/.claude-usage-tracker when this was Claude-only);
+// an existing legacy dir keeps being used so pace-history/pricing/limits caches
+// survive the rename instead of starting cold.
+export const STATE_DIR = (() => {
+  const next = path.join(os.homedir(), ".ai-usage-tracker");
+  const legacy = path.join(os.homedir(), ".claude-usage-tracker");
+  try {
+    if (!fs.existsSync(next) && fs.existsSync(legacy)) {
+      fs.cpSync(legacy, next, { recursive: true });
+    }
+  } catch {}
+  fs.mkdirSync(next, { recursive: true });
+  return next;
+})();
 
 // Multi-machine usage, the low-effort way: drop a JSON file per machine here
 // (Syncthing, a cloud-synced folder, scp, whatever moves bytes between your
@@ -334,39 +346,33 @@ export async function collectUsage() {
   };
 }
 
-// Plan-Limits (Session/Weekly): primär live über Anthropics OAuth-Usage-Endpoint,
-// mit dem Token, das Claude Code lokal pflegt. Fallback: Claude Codes eigener Cache.
-const CLAUDE_JSON = path.join(os.homedir(), ".claude.json");
-const CREDENTIALS = path.join(os.homedir(), ".claude", ".credentials.json");
+// Plan-Limits (Session/Weekly/Plan-Cycle): jetzt multi-provider — siehe
+// providers.ts. Jeder erkannte Provider (Anthropic, Codex, OpenRouter, Z.ai)
+// liefert seine eigenen Fenster; Pace-Historie und Predictions bleiben pro
+// Provider+Fenster getrennt (Namespace über den Pace-Key).
+import { fetchAllProviders, type ProviderSnapshot, type RawWindow } from "./providers.ts";
 
-interface RawLimit {
-  kind: string;
-  percent: number;
-  severity: string;
-  resets_at: string | null;
-  scope?: { model?: { display_name?: string } | null } | null;
+export interface ProviderLimitsPayload {
+  provider: string;
+  label: string;
+  plan: string | null;
+  source: "live" | "unavailable";
+  fetchedAtMs: number;
+  limits: PredictedLimit[];
+  details: string[];
+  error?: string;
 }
 
-function mapLimits(limits: RawLimit[]): LimitInfo[] {
-  return limits.map((l) => ({
-    kind: l.kind,
-    percent: l.percent,
-    severity: l.severity,
-    resetsAt: l.resets_at,
-    scope: l.scope?.model?.display_name ?? null,
-  }));
+export interface AllProvidersPayload {
+  fetchedAtMs: number;
+  providers: ProviderLimitsPayload[];
 }
 
-function planLabel(tier: string | null | undefined): string | null {
-  return (
-    (tier ?? "")
-      .replace(/^default_claude_/, "")
-      .replace(/_(\d+)x$/, " $1×")
-      .replace(/^\w/, (c) => c.toUpperCase()) || null
-  );
-}
 
-// Pace-Historie: regelmäßige Samples der Limit-Prozente, persistiert über Neustarts
+// Pace-Historie: regelmäßige Samples der Limit-Prozente, persistiert über Neustarts.
+// Keys sind jetzt providerscoped ("anthropic:session", "zai:5h_window", ...),
+// damit unterschiedliche Provider mit gleichem `kind` (z. B. beide "session")
+// sich nicht die Pace-Historie teilen.
 const HISTORY_FILE = path.join(STATE_DIR, "pace-history.json");
 const HISTORY_MAX_AGE = 8 * 24 * 3600 * 1000;
 
@@ -380,28 +386,21 @@ try {
   paceHistory = JSON.parse(fs.readFileSync(HISTORY_FILE, "utf8"));
 } catch {}
 
-// Claude Codes eigener Cache liefert einen älteren Datenpunkt als Start-Seed
-(function seedHistory() {
-  const cached = readLimits(); // Funktionsdeklaration, gehoisted
-  if (!cached?.limits) return;
-  if (paceHistory.some((s) => Math.abs(s.t - cached.fetchedAtMs) < 60000)) return;
-  const values: Record<string, number> = {};
-  for (const l of cached.limits) values[limitKey(l)] = l.percent;
-  paceHistory.push({ t: cached.fetchedAtMs, values });
-  paceHistory.sort((a, b) => a.t - b.t);
-})();
-
-function limitKey(l: LimitInfo): string {
-  return l.scope ? `${l.kind}:${l.scope}` : l.kind;
+function limitKey(provider: string, l: RawWindow): string {
+  const base = l.scope ? `${l.kind}:${l.scope}` : l.kind;
+  return `${provider}:${base}`;
 }
 
-function recordSample(limits: LimitInfo[]): void {
+function recordSample(provider: string, windows: RawWindow[]): void {
   const now = Date.now();
   const last = paceHistory[paceHistory.length - 1];
-  if (last && now - last.t < 2 * 60 * 1000) return;
-  const values: Record<string, number> = {};
-  for (const l of limits) values[limitKey(l)] = l.percent;
-  paceHistory.push({ t: now, values });
+  const values: Record<string, number> = last && now - last.t < 2 * 60 * 1000 ? { ...last.values } : {};
+  for (const l of windows) values[limitKey(provider, l)] = l.percent;
+  if (last && now - last.t < 2 * 60 * 1000) {
+    last.values = values;
+  } else {
+    paceHistory.push({ t: now, values });
+  }
   paceHistory = paceHistory.filter((s) => now - s.t < HISTORY_MAX_AGE);
   fs.writeFile(HISTORY_FILE, JSON.stringify(paceHistory), () => {});
 }
@@ -431,15 +430,16 @@ function computePace(
   return { pace: (samples[samples.length - 1].v - samples[0].v) / dt, spanHours: dt };
 }
 
-export function withPredictions(limits: LimitInfo[]): PredictedLimit[] {
-  return limits.map((l) => {
-    const isSession = l.kind === "session";
-    // Session: kurzes Fenster, lineare Fortschreibung ist hier fair.
-    // Weekly: langes Fenster (Ø inkl. Leerlauf) — kurze Bursts sind ohnehin
-    // durchs Session-Limit gedeckelt, linear hochrechnen wäre Unsinn.
+// "session"-artige Fenster (kurzer Reset-Zyklus) bekommen die lineare
+// Kurzfrist-Fortschreibung; alles andere (weekly/plan-cycle) den 72h-Ø.
+const SHORT_WINDOW_KINDS = new Set(["session", "5h_window"]);
+
+function withPredictions(provider: string, windows: RawWindow[]): PredictedLimit[] {
+  return windows.map((l) => {
+    const isSession = SHORT_WINDOW_KINDS.has(l.kind);
     const windowMs = isSession ? 3 * 3600 * 1000 : 72 * 3600 * 1000;
-    const result = computePace(limitKey(l), l.percent, windowMs);
-    // Weekly-Ø braucht genug Historie (inkl. Leerlaufphasen), sonst verzerren Bursts
+    const key = limitKey(provider, l);
+    const result = computePace(key, l.percent, windowMs);
     const pace = result == null || (!isSession && result.spanHours < 12) ? null : result.pace;
     const resetMs = l.resetsAt ? Date.parse(l.resetsAt) : null;
 
@@ -451,8 +451,15 @@ export function withPredictions(limits: LimitInfo[]): PredictedLimit[] {
         projectedAtReset = Math.round(l.percent + pace * ((resetMs - Date.now()) / 3600000));
       }
     }
+    const limitInfo: LimitInfo = {
+      kind: l.kind,
+      percent: l.percent,
+      severity: l.severity,
+      resetsAt: l.resetsAt,
+      scope: l.scope,
+    };
     return {
-      ...l,
+      ...limitInfo,
       isSession,
       pacePerHour: pace,
       exhaustsAtMs,
@@ -463,94 +470,85 @@ export function withPredictions(limits: LimitInfo[]): PredictedLimit[] {
   });
 }
 
-// Letzter guter Live-Stand, auf Disk persistiert — überlebt Server-Neustarts,
-// damit ein 429-Cooldown nicht auf uralte Daten zurückwirft.
+// Letzter guter Multi-Provider-Stand, auf Disk persistiert — überlebt
+// Server-Neustarts, damit ein Cooldown/Fehler nicht auf uralte Daten zurückwirft.
 const LIMITS_CACHE = path.join(STATE_DIR, "limits-cache.json");
 
-let liveLimitsCache: { at: number; data: LimitsPayload | null } = { at: 0, data: null };
-let limitsCooldownUntil = 0; // Backoff nach Fehlern (z. B. 429 vom Usage-Endpoint)
+let liveLimitsCache: { at: number; data: AllProvidersPayload | null } = { at: 0, data: null };
 
 try {
-  const saved = JSON.parse(fs.readFileSync(LIMITS_CACHE, "utf8")) as LimitsPayload;
+  const saved = JSON.parse(fs.readFileSync(LIMITS_CACHE, "utf8")) as AllProvidersPayload;
   liveLimitsCache = { at: 0, data: saved }; // at: 0 → nächster Abruf versucht sofort live
 } catch {}
 
-export async function fetchLiveLimits(): Promise<LimitsPayload | null> {
-  if (Date.now() - liveLimitsCache.at < 60_000) return liveLimitsCache.data;
-  if (Date.now() < limitsCooldownUntil) throw new Error("limits cooldown");
-  const oauth = JSON.parse(fs.readFileSync(CREDENTIALS, "utf8")).claudeAiOauth;
-  const res = await fetch("https://api.anthropic.com/api/oauth/usage", {
-    headers: {
-      Authorization: `Bearer ${oauth.accessToken}`,
-      "anthropic-beta": "oauth-2025-04-20",
-    },
-    signal: AbortSignal.timeout(5000),
+async function fetchAllLimits(): Promise<AllProvidersPayload> {
+  const snapshots = await fetchAllProviders();
+  const providers: ProviderLimitsPayload[] = snapshots.map((s) => {
+    if (s.source === "live") recordSample(s.provider, s.windows);
+    return {
+      provider: s.provider,
+      label: s.label,
+      plan: s.plan,
+      source: s.source,
+      fetchedAtMs: s.fetchedAtMs,
+      limits: withPredictions(s.provider, s.windows),
+      details: s.details,
+      error: s.error,
+    };
   });
-  if (!res.ok) {
-    limitsCooldownUntil = Date.now() + (res.status === 429 ? 5 : 2) * 60 * 1000;
-    throw new Error(`usage endpoint ${res.status}`);
-  }
-  const j = (await res.json()) as { limits?: RawLimit[] };
-  const limits = mapLimits(j.limits ?? []);
-  recordSample(limits);
-  const data: LimitsPayload = {
-    fetchedAtMs: Date.now(),
-    source: "live",
-    plan: planLabel(oauth.rateLimitTier),
-    limits: withPredictions(limits),
-  };
+  const data: AllProvidersPayload = { fetchedAtMs: Date.now(), providers };
   liveLimitsCache = { at: Date.now(), data };
   fs.writeFile(LIMITS_CACHE, JSON.stringify(data), () => {});
   return data;
 }
 
 // Auch ohne offenes Dashboard weiter sampeln, damit die Pace-Historie dicht bleibt
-setInterval(() => fetchLiveLimits().catch(() => {}), 5 * 60 * 1000).unref();
-fetchLiveLimits().catch(() => {});
+setInterval(() => fetchAllLimits().catch(() => {}), 5 * 60 * 1000).unref();
+fetchAllLimits().catch(() => {});
 
-// Fallback-Kandidat: Claude Codes Cache-Metadaten, aber mit den Prozentwerten
-// aus dem jüngsten Pace-Sample (das bei jedem erfolgreichen Live-Fetch entsteht).
-export function limitsFromHistory(): LimitsPayload | null {
-  const base = readLimits();
-  const last = paceHistory[paceHistory.length - 1];
-  if (!base || !last || last.t <= base.fetchedAtMs) return null;
+// Aktuellster verfügbarer Multi-Provider-Stand: live (max. alle 60s neu
+// abgefragt), sonst der letzte gute Cache-Snapshot mit frisch berechneten
+// Predictions (Pace-Historie kann sich seither weiterentwickelt haben).
+export async function getAllLimits(): Promise<AllProvidersPayload> {
+  if (Date.now() - liveLimitsCache.at < 60_000 && liveLimitsCache.data) {
+    return liveLimitsCache.data;
+  }
+  try {
+    return await fetchAllLimits();
+  } catch {
+    if (liveLimitsCache.data) {
+      return {
+        ...liveLimitsCache.data,
+        providers: liveLimitsCache.data.providers.map((p) => ({
+          ...p,
+          limits: withPredictions(
+            p.provider,
+            p.limits.map((l) => ({ kind: l.kind, percent: l.percent, severity: l.severity, resetsAt: l.resetsAt, scope: l.scope })),
+          ),
+        })),
+      };
+    }
+    return { fetchedAtMs: Date.now(), providers: [] };
+  }
+}
+
+// Legacy single-provider shape, kept for the CLI widget / anything still on
+// the old contract — derived from getAllLimits() so there's one source of
+// truth. Prefers Anthropic (the original default) if present, else the
+// first live provider.
+export async function getLimits(): Promise<LimitsPayload | null> {
+  const all = await getAllLimits();
+  if (!all.providers.length) return null;
+  const preferred =
+    all.providers.find((p) => p.provider === "anthropic" && p.source === "live") ??
+    all.providers.find((p) => p.source === "live") ??
+    all.providers[0];
+  if (!preferred || !preferred.limits.length) return null;
   return {
-    ...base,
-    fetchedAtMs: last.t,
-    limits: base.limits.map((l) =>
-      last.values[limitKey(l)] != null ? { ...l, percent: last.values[limitKey(l)] } : l,
-    ),
+    fetchedAtMs: preferred.fetchedAtMs,
+    source: preferred.source === "live" ? "live" : "cache",
+    plan: preferred.plan,
+    limits: preferred.limits,
   };
 }
 
-export function readLimits(): LimitsPayload | null {
-  try {
-    const j = JSON.parse(fs.readFileSync(CLAUDE_JSON, "utf8"));
-    const u = j.cachedUsageUtilization;
-    if (!u?.utilization?.limits) return null;
-    return {
-      fetchedAtMs: u.fetchedAtMs,
-      source: "cache",
-      plan: planLabel(j.oauthAccount?.organizationRateLimitTier),
-      limits: mapLimits(u.utilization.limits),
-    };
-  } catch {
-    return null;
-  }
-}
-
-
-// Aktuellster verfügbarer Limit-Stand: live, sonst frischeste Cache-Quelle
-export async function getLimits(): Promise<LimitsPayload | null> {
-  try {
-    return await fetchLiveLimits();
-  } catch {
-    const candidates = [liveLimitsCache.data, limitsFromHistory(), readLimits()].filter(
-      (c): c is LimitsPayload => c != null,
-    );
-    const best = candidates.sort((a, b) => b.fetchedAtMs - a.fetchedAtMs)[0] ?? null;
-    return best
-      ? { ...best, source: "cache", limits: withPredictions(best.limits) }
-      : null;
-  }
-}

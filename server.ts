@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { collectUsage, getLimits } from "./lib.ts";
+import { collectUsage, getLimits, getAllLimits } from "./lib.ts";
 
 const PORT = Number(process.env.PORT) || 3789;
 const PROJECTS_DIR = path.join(os.homedir(), ".claude", "projects");
@@ -73,6 +73,15 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // New multi-provider payload — every detected AI subscription/API
+  // credential with its own live rate-limit windows. /api/limits stays for
+  // back-compat (single-provider shape, Anthropic-first).
+  if (url.pathname === "/api/limits/all") {
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(await getAllLimits()));
+    return;
+  }
+
   if (url.pathname === "/api/usage") {
     try {
       const data = await collectUsage();
@@ -98,6 +107,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Claude Usage Tracker → http://localhost:${PORT}`);
+  console.log(`AI Usage Tracker → http://localhost:${PORT}`);
   console.log(`Data source: ${PROJECTS_DIR}`);
 });

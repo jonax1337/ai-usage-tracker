@@ -289,9 +289,51 @@ body {
 
 /* Plan limits */
 .limits {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.provider-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.provider-group:not(:last-child) {
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+.provider-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.provider-head i {
+  font-size: 15px;
+  color: var(--accent);
+}
+.provider-title {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.provider-meta {
+  color: var(--text-muted);
+  margin-left: auto;
+}
+.provider-meta-warn {
+  color: var(--negative);
+}
+.provider-tiles {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
   gap: 12px;
+}
+.provider-details {
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 .limit {
   background: var(--surface-2);
