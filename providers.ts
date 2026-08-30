@@ -90,6 +90,23 @@ function envVar(name: string): string | null {
 
 const CLAUDE_CREDENTIALS = path.join(os.homedir(), ".claude", ".credentials.json");
 
+// Per-provider 429 backoff (ms-timestamp until which live fetches are skipped).
+// The usage endpoints rate-limit aggressive pollers hard; without backoff one
+// 429 (e.g. while the dashboard and a CLI refresh overlap) poisons every
+// subsequent fetch for the rest of the process lifetime.
+const providerCooldowns = new Map<string, number>();
+const COOLDOWN_429_MS = 5 * 60 * 1000;
+const COOLDOWN_ERR_MS = 2 * 60 * 1000;
+
+function inCooldown(provider: string): boolean {
+  const until = providerCooldowns.get(provider) ?? 0;
+  return Date.now() < until;
+}
+
+function setCooldown(provider: string, ms: number): void {
+  providerCooldowns.set(provider, Date.now() + ms);
+}
+
 function planLabel(tier: string | null | undefined): string | null {
   return (
     (tier ?? "")
@@ -103,6 +120,7 @@ async function fetchAnthropic(): Promise<ProviderSnapshot | null> {
   const creds = readJson<any>(CLAUDE_CREDENTIALS);
   const oauth = creds?.claudeAiOauth;
   if (!oauth?.accessToken) return null; // not detected on this machine
+  if (inCooldown("anthropic")) return null;
   try {
     const res = await fetch("https://api.anthropic.com/api/oauth/usage", {
       headers: {
@@ -111,7 +129,10 @@ async function fetchAnthropic(): Promise<ProviderSnapshot | null> {
       },
       signal: AbortSignal.timeout(8000),
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      if (res.status === 429) setCooldown("anthropic", COOLDOWN_429_MS);
+      throw new Error(`HTTP ${res.status}`);
+    }
     const j = (await res.json()) as { limits?: any[] };
     const windows: RawWindow[] = (j.limits ?? []).map((l) => ({
       kind: l.kind,
@@ -165,6 +186,7 @@ async function fetchCodex(): Promise<ProviderSnapshot | null> {
   const accessToken = auth?.tokens?.access_token;
   if (!accessToken) return null;
   const accountId = auth?.tokens?.account_id as string | undefined;
+  if (inCooldown("openai-codex")) return null;
   try {
     const res = await fetch("https://chatgpt.com/backend-api/wham/usage", {
       headers: {
@@ -174,7 +196,10 @@ async function fetchCodex(): Promise<ProviderSnapshot | null> {
       },
       signal: AbortSignal.timeout(8000),
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      if (res.status === 429) setCooldown("openai-codex", COOLDOWN_429_MS);
+      throw new Error(`HTTP ${res.status}`);
+    }
     const j = (await res.json()) as any;
     const rateLimit = j.rate_limit ?? {};
     const windows: RawWindow[] = [];
@@ -232,13 +257,17 @@ async function fetchCodex(): Promise<ProviderSnapshot | null> {
 async function fetchOpenRouter(): Promise<ProviderSnapshot | null> {
   const key = envVar("OPENROUTER_API_KEY");
   if (!key) return null;
+  if (inCooldown("openrouter")) return null;
   try {
     const headers = { Authorization: `Bearer ${key}` };
     const [creditsRes, keyRes] = await Promise.all([
       fetch("https://openrouter.ai/api/v1/credits", { headers, signal: AbortSignal.timeout(8000) }),
       fetch("https://openrouter.ai/api/v1/key", { headers, signal: AbortSignal.timeout(8000) }).catch(() => null),
     ]);
-    if (!creditsRes.ok) throw new Error(`HTTP ${creditsRes.status}`);
+    if (!creditsRes.ok) {
+      if (creditsRes.status === 429) setCooldown("openrouter", COOLDOWN_429_MS);
+      throw new Error(`HTTP ${creditsRes.status}`);
+    }
     const credits = ((await creditsRes.json()) as any)?.data ?? {};
     const total = Number(credits.total_credits) || 0;
     const used = Number(credits.total_usage) || 0;
@@ -291,12 +320,16 @@ async function fetchOpenRouter(): Promise<ProviderSnapshot | null> {
 async function fetchZai(): Promise<ProviderSnapshot | null> {
   const key = envVar("GLM_API_KEY") || envVar("ZAI_API_KEY");
   if (!key) return null;
+  if (inCooldown("zai")) return null;
   try {
     const res = await fetch("https://api.z.ai/api/monitor/usage/quota/limit", {
       headers: { Authorization: `Bearer ${key}` },
       signal: AbortSignal.timeout(8000),
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      if (res.status === 429) setCooldown("zai", COOLDOWN_429_MS);
+      throw new Error(`HTTP ${res.status}`);
+    }
     const j = (await res.json()) as any;
     if (!j?.success || !j?.data) throw new Error("unexpected response shape");
     const limits: any[] = j.data.limits ?? [];
@@ -350,5 +383,19 @@ const FETCHERS: Array<() => Promise<ProviderSnapshot | null>> = [
 // visible instead of silently vanishing.
 export async function fetchAllProviders(): Promise<ProviderSnapshot[]> {
   const results = await Promise.all(FETCHERS.map((fn) => fn().catch(() => null)));
-  return results.filter((r): r is ProviderSnapshot => r !== null);
+  const snapshots = results.filter((r): r is ProviderSnapshot => r !== null);
+  // Providers in a 429/err cooldown return null (omitted above). Keep their
+  // last good snapshot from the previous cycle visible instead of dropping
+  // them from the dashboard — a cooldown is a temporary state, not "gone".
+  for (const prev of lastGoodSnapshots.values()) {
+    if (!snapshots.some((s) => s.provider === prev.provider)) {
+      snapshots.push({ ...prev, source: "unavailable", error: "cooldown (rate-limited)" });
+    }
+  }
+  for (const s of snapshots) {
+    if (s.source === "live") lastGoodSnapshots.set(s.provider, s);
+  }
+  return snapshots;
 }
+
+const lastGoodSnapshots = new Map<string, ProviderSnapshot>();
