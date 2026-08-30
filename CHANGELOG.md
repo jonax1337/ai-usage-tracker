@@ -7,7 +7,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versio
 
 ### Renamed
 
-- **claude-usage-tracker → ai-usage-tracker** (npm package and GitHub repo), CLI command `claude-usage` → `ai-usage`. The tool tracks all detected AI subscriptions now, not just Claude — the old name was a lie. State dir moves `~/.claude-usage-tracker/` → `~/.ai-usage-tracker/` (existing data is migrated automatically on first run).
+- **claude-usage-tracker → aiusage-tracker** (npm package) and GitHub repo `ai-usage-tracker`, CLI command `claude-usage` → `aiusage`. The tool tracks all detected AI subscriptions now, not just Claude — the old name was a lie. State dir moves `~/.claude-usage-tracker/` → `~/.aiusage-tracker/` (existing data is migrated automatically on first run).
 
 ### Added
 

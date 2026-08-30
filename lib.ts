@@ -10,7 +10,7 @@ const PROJECTS_DIR = path.join(os.homedir(), ".claude", "projects");
 // an existing legacy dir keeps being used so pace-history/pricing/limits caches
 // survive the rename instead of starting cold.
 export const STATE_DIR = (() => {
-  const next = path.join(os.homedir(), ".ai-usage-tracker");
+  const next = path.join(os.homedir(), ".aiusage-tracker");
   const legacy = path.join(os.homedir(), ".claude-usage-tracker");
   try {
     if (!fs.existsSync(next) && fs.existsSync(legacy)) {

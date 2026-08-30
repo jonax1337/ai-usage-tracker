@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// ai-usage — CLI entry point.
+// aiusage — CLI entry point.
 //
-//   ai-usage            live terminal widget (limits, pace, today's cost)
-//   ai-usage serve      run the web dashboard in the foreground
-//   ai-usage start      run the web dashboard as a background daemon
-//   ai-usage stop       stop the background daemon
-//   ai-usage status     show whether the daemon is running
+//   aiusage            live terminal widget (limits, pace, today's cost)
+//   aiusage serve      run the web dashboard in the foreground
+//   aiusage start      run the web dashboard as a background daemon
+//   aiusage stop       stop the background daemon
+//   aiusage status     show whether the daemon is running
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -220,12 +220,12 @@ async function widget(): Promise<void> {
 
 // ---------- dispatch ----------
 
-const HELP = `ai-usage — local multi-provider AI usage tracker
+const HELP = `aiusage — local multi-provider AI usage tracker
 
 Usage:
-  ai-usage            live terminal widget (limits, pace, today's cost)
-  ai-usage serve      run the web dashboard in the foreground
-  ai-usage start      run the web dashboard as a background daemon
+  aiusage            live terminal widget (limits, pace, today's cost)
+  aiusage serve      run the web dashboard in the foreground
+  aiusage start      run the web dashboard as a background daemon
   ai-usage stop       stop the background daemon
   ai-usage status     show whether the daemon is running
 

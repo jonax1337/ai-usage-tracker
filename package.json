@@ -1,10 +1,10 @@
 {
-  "name": "ai-usage-tracker",
+  "name": "aiusage-tracker",
   "version": "1.7.0",
   "description": "Local zero-dependency dashboard and CLI for multi-provider AI usage, costs, plan limits, and pace predictions (Claude Code, Codex, OpenRouter, Z.ai/GLM)",
   "type": "module",
   "bin": {
-    "ai-usage": "dist/cli.js"
+    "aiusage": "dist/cli.js"
   },
   "files": [
     "dist",

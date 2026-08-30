@@ -24,17 +24,17 @@ A local, zero-dependency dashboard for your [Claude Code](https://claude.com/cla
 ## Install
 
 ```bash
-npm install -g ai-usage-tracker
+npm install -g aiusage-tracker
 ```
 
-That gives you the `ai-usage` command:
+That gives you the `aiusage` command:
 
 ```bash
-ai-usage            # live terminal widget (limits, pace, today's cost)
-ai-usage serve      # web dashboard in the foreground
-ai-usage start      # web dashboard as a background daemon
-ai-usage stop       # stop the daemon
-ai-usage status     # is the daemon running?
+aiusage            # live terminal widget (limits, pace, today's cost)
+aiusage serve      # web dashboard in the foreground
+aiusage start      # web dashboard as a background daemon
+aiusage stop       # stop the daemon
+aiusage status     # is the daemon running?
 ```
 
 Open **http://localhost:3789** once the dashboard runs (`PORT` env var to change). State and logs live in `~/.ai-usage-tracker/` (legacy `~/.claude-usage-tracker/` is still read as a fallback).
@@ -95,7 +95,7 @@ import('./lib.ts').then(async ({ collectUsage }) => {
 A live terminal widget that keeps re-rendering in place — plan limits with colored meters, pace predictions, and today's cost:
 
 ```bash
-ai-usage            # (or npm run cli from a checkout)
+aiusage            # (or npm run cli from a checkout)
 ```
 
 ```
