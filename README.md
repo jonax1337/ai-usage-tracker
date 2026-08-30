@@ -1,4 +1,4 @@
-# Claude Usage Tracker
+# AI Usage Tracker
 
 A local, zero-dependency dashboard for your [Claude Code](https://claude.com/claude-code) (and, optionally, [Hermes Agent](https://github.com/NousResearch/hermes-agent)) token usage, costs, and plan limits — with live updates, pace predictions, and a floating picture-in-picture widget.
 
@@ -24,28 +24,28 @@ A local, zero-dependency dashboard for your [Claude Code](https://claude.com/cla
 ## Install
 
 ```bash
-npm install -g claude-code-usage-tracker
+npm install -g ai-usage-tracker
 ```
 
-That gives you the `claude-usage` command:
+That gives you the `ai-usage` command:
 
 ```bash
-claude-usage            # live terminal widget (limits, pace, today's cost)
-claude-usage serve      # web dashboard in the foreground
-claude-usage start      # web dashboard as a background daemon
-claude-usage stop       # stop the daemon
-claude-usage status     # is the daemon running?
+ai-usage            # live terminal widget (limits, pace, today's cost)
+ai-usage serve      # web dashboard in the foreground
+ai-usage start      # web dashboard as a background daemon
+ai-usage stop       # stop the daemon
+ai-usage status     # is the daemon running?
 ```
 
-Open **http://localhost:3789** once the dashboard runs (`PORT` env var to change). State and logs live in `~/.claude-usage-tracker/`.
+Open **http://localhost:3789** once the dashboard runs (`PORT` env var to change). State and logs live in `~/.ai-usage-tracker/` (legacy `~/.claude-usage-tracker/` is still read as a fallback).
 
 Requirements: Node.js ≥ 20 and a machine where Claude Code has been used (transcripts in `~/.claude/projects`).
 
 ### From source
 
 ```bash
-git clone https://github.com/jonax1337/claude-usage-tracker.git
-cd claude-usage-tracker
+git clone https://github.com/jonax1337/ai-usage-tracker.git
+cd ai-usage-tracker
 npm start               # Node >= 23.6 (runs the .ts natively)
 ```
 
@@ -95,7 +95,7 @@ import('./lib.ts').then(async ({ collectUsage }) => {
 A live terminal widget that keeps re-rendering in place — plan limits with colored meters, pace predictions, and today's cost:
 
 ```bash
-claude-usage            # (or npm run cli from a checkout)
+ai-usage            # (or npm run cli from a checkout)
 ```
 
 ```

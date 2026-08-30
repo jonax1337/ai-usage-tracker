@@ -5,6 +5,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versio
 
 ## [1.7.0] - 2026-08-30
 
+### Renamed
+
+- **claude-usage-tracker → ai-usage-tracker** (npm package and GitHub repo), CLI command `claude-usage` → `ai-usage`. The tool tracks all detected AI subscriptions now, not just Claude — the old name was a lie. State dir moves `~/.claude-usage-tracker/` → `~/.ai-usage-tracker/` (existing data is migrated automatically on first run).
+
 ### Added
 
 - **Multi-provider live plan limits**: the dashboard now auto-detects every AI subscription/API credential present on the machine and shows each one's live rate-limit/quota status side by side, not just Anthropic. New `providers.ts` module with one `detect()`+`fetch()` per provider:

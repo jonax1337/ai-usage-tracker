@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// claude-usage — CLI entry point.
+// ai-usage — CLI entry point.
 //
-//   claude-usage            live terminal widget (limits, pace, today's cost)
-//   claude-usage serve      run the web dashboard in the foreground
-//   claude-usage start      run the web dashboard as a background daemon
-//   claude-usage stop       stop the background daemon
-//   claude-usage status     show whether the daemon is running
+//   ai-usage            live terminal widget (limits, pace, today's cost)
+//   ai-usage serve      run the web dashboard in the foreground
+//   ai-usage start      run the web dashboard as a background daemon
+//   ai-usage stop       stop the background daemon
+//   ai-usage status     show whether the daemon is running
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -142,7 +142,7 @@ function setTitle(title: string): void {
 }
 
 function titleFor(limits: Awaited<ReturnType<typeof getLimits>>): string {
-  if (!limits) return "📊 Claude Usage";
+  if (!limits) return "📊 AI Usage";
   const ls = limits.limits as PredictedLimit[];
   // Title tracks session + overall weekly only; model-scoped limits (e.g. Fable) stay out
   const dot = (l: PredictedLimit): string =>
@@ -153,7 +153,7 @@ function titleFor(limits: Awaited<ReturnType<typeof getLimits>>): string {
     session ? `${dot(session)} ${session.percent}% session` : null,
     week ? `${dot(week)} ${week.percent}% week` : null,
   ].filter(Boolean);
-  return parts.length ? `${parts.join(" · ")} — Claude Usage` : "📊 Claude Usage";
+  return parts.length ? `${parts.join(" · ")} — AI Usage` : "📊 AI Usage";
 }
 
 async function frame(): Promise<string> {
@@ -163,7 +163,7 @@ async function frame(): Promise<string> {
   const now = new Date().toLocaleTimeString("en-US");
 
   const status = limits?.source === "live" ? fg(GREEN, "● live") : fg(YELLOW, "● cached");
-  lines.push(`${bold("Claude Usage Tracker")}  ${limits?.plan ? dim(limits.plan + " · ") : ""}${status} ${dim(now)}`);
+  lines.push(`${bold("AI Usage Tracker")}  ${limits?.plan ? dim(limits.plan + " · ") : ""}${status} ${dim(now)}`);
   lines.push("");
 
   if (limits) {
@@ -220,14 +220,14 @@ async function widget(): Promise<void> {
 
 // ---------- dispatch ----------
 
-const HELP = `claude-usage — local Claude Code usage tracker
+const HELP = `ai-usage — local multi-provider AI usage tracker
 
 Usage:
-  claude-usage            live terminal widget (limits, pace, today's cost)
-  claude-usage serve      run the web dashboard in the foreground
-  claude-usage start      run the web dashboard as a background daemon
-  claude-usage stop       stop the background daemon
-  claude-usage status     show whether the daemon is running
+  ai-usage            live terminal widget (limits, pace, today's cost)
+  ai-usage serve      run the web dashboard in the foreground
+  ai-usage start      run the web dashboard as a background daemon
+  ai-usage stop       stop the background daemon
+  ai-usage status     show whether the daemon is running
 
 Dashboard: http://localhost:${PORT}  (PORT env var to change)
 State dir: ${STATE_DIR}`;

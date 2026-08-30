@@ -5,9 +5,21 @@ import readline from "node:readline";
 import { collectHermesUsage } from "./hermes.ts";
 
 const PROJECTS_DIR = path.join(os.homedir(), ".claude", "projects");
-// User-scoped state dir — a globally installed package must not write into itself
-export const STATE_DIR = path.join(os.homedir(), ".claude-usage-tracker");
-fs.mkdirSync(STATE_DIR, { recursive: true });
+// User-scoped state dir — a globally installed package must not write into itself.
+// Renamed with v1.7.0 (was ~/.claude-usage-tracker when this was Claude-only);
+// an existing legacy dir keeps being used so pace-history/pricing/limits caches
+// survive the rename instead of starting cold.
+export const STATE_DIR = (() => {
+  const next = path.join(os.homedir(), ".ai-usage-tracker");
+  const legacy = path.join(os.homedir(), ".claude-usage-tracker");
+  try {
+    if (!fs.existsSync(next) && fs.existsSync(legacy)) {
+      fs.cpSync(legacy, next, { recursive: true });
+    }
+  } catch {}
+  fs.mkdirSync(next, { recursive: true });
+  return next;
+})();
 
 // Multi-machine usage, the low-effort way: drop a JSON file per machine here
 // (Syncthing, a cloud-synced folder, scp, whatever moves bytes between your

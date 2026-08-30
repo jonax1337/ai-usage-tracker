@@ -107,6 +107,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Claude Usage Tracker → http://localhost:${PORT}`);
+  console.log(`AI Usage Tracker → http://localhost:${PORT}`);
   console.log(`Data source: ${PROJECTS_DIR}`);
 });
