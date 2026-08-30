@@ -3,6 +3,24 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [SemVer](https://semver.org/).
 
+## [1.7.0] - 2026-08-30
+
+### Added
+
+- **Multi-provider live plan limits**: the dashboard now auto-detects every AI subscription/API credential present on the machine and shows each one's live rate-limit/quota status side by side, not just Anthropic. New `providers.ts` module with one `detect()`+`fetch()` per provider:
+  - **Anthropic (Claude Code OAuth)** — unchanged, `api.anthropic.com/api/oauth/usage`
+  - **OpenAI Codex (ChatGPT OAuth)** — `chatgpt.com/backend-api/wham/usage`, session + weekly windows, banked reset-credit and pay-as-you-go balance surfaced as details
+  - **OpenRouter** — `/v1/credits` balance plus an optional `/v1/key` scoped-key quota window, if the key has one
+  - **Z.ai / GLM Coding Plan** — `api.z.ai/api/monitor/usage/quota/limit`, the same endpoint the official ZCode desktop client uses; shows the 5-hour window and the plan billing cycle with remaining/used token counts
+  - A provider is only shown once its credentials are detected on disk (`~/.claude/.credentials.json`, `~/.codex/auth.json`, `OPENROUTER_API_KEY`/`GLM_API_KEY` from the environment or Hermes Agent's `.env`). A detected provider whose live call fails still renders as an "unavailable" card with the error — real outages/auth problems stay visible instead of silently vanishing.
+  - Pace history and burn-rate predictions are now namespaced per `provider:kind[:scope]`, so e.g. Anthropic's and Codex's "session" windows never share pace data.
+- New `GET /api/limits/all` endpoint returning the full multi-provider payload (`{ fetchedAtMs, providers: [...] }`). `GET /api/limits` is kept for backward compatibility and now derives its single-provider shape from the new data (prefers a live Anthropic snapshot, falls back to the first live provider).
+
+### Changed
+
+- The "Plan limits" dashboard card is now grouped by provider (icon + label + plan/freshness header per provider, followed by that provider's own limit tiles), instead of one flat row of tiles.
+- `lib.ts`'s limits section was rewritten around `providers.ts`; `readLimits()`/`fetchLiveLimits()`/`limitsFromHistory()` (Anthropic-only) were replaced by `getAllLimits()`/`fetchAllLimits()`. `getLimits()` is kept as a legacy derived view for the CLI widget, which is otherwise unchanged.
+
 ## [1.6.0] - 2026-08-30
 
 ### Changed

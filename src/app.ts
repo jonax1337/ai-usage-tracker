@@ -31,11 +31,20 @@ interface Limit {
   projectedAtReset?: number | null;
 }
 
-interface LimitsData {
-  fetchedAtMs: number;
-  source: "live" | "cache";
+interface ProviderLimits {
+  provider: string;
+  label: string;
   plan: string | null;
+  source: "live" | "unavailable";
+  fetchedAtMs: number;
   limits: Limit[];
+  details: string[];
+  error?: string;
+}
+
+interface AllLimitsData {
+  fetchedAtMs: number;
+  providers: ProviderLimits[];
 }
 
 interface AppState {
@@ -529,6 +538,10 @@ const LIMIT_NAMES: Record<string, string> = {
   session: "Current session (5 h)",
   weekly_all: "Week · all models",
   weekly_scoped: "Week",
+  weekly: "Week",
+  "5h_window": "5-hour window",
+  plan_cycle: "Plan cycle",
+  api_key_quota: "API key quota",
 };
 
 function limitName(l: Limit): string {
@@ -546,88 +559,138 @@ function fmtReset(iso: string | null): string {
     : `Resets ${d.toLocaleDateString(LOCALE, { weekday: "short", month: "short", day: "numeric" })}, ${time}`;
 }
 
-function renderLimits(data: LimitsData | null): void {
+function renderLimitTile(l: Limit): HTMLElement {
+  const stateName = l.severity !== "normal" || l.percent >= 90 ? "critical" : l.percent >= 70 ? "warning" : "normal";
+
+  const el = document.createElement("div");
+  el.className = "limit";
+
+  const head = document.createElement("div");
+  head.className = "limit-head";
+  const name = document.createElement("span");
+  name.className = "limit-name";
+  name.textContent = limitName(l);
+  const pct = document.createElement("span");
+  pct.className = "limit-pct";
+  pct.textContent = `${l.percent} %`;
+  head.append(name, pct);
+
+  const meter = document.createElement("div");
+  meter.className = `meter ${stateName}`;
+  meter.setAttribute("role", "progressbar");
+  meter.setAttribute("aria-valuenow", String(l.percent));
+  meter.setAttribute("aria-valuemax", "100");
+  const fill = document.createElement("div");
+  fill.className = "meter-fill";
+  fill.style.width = `${Math.min(l.percent, 100)}%`;
+  meter.append(fill);
+
+  const reset = document.createElement("div");
+  reset.className = "limit-reset";
+  reset.textContent = fmtReset(l.resetsAt);
+
+  const pred = document.createElement("div");
+  pred.className = "limit-pred";
+  const fmtWhen = (ms: number): string => {
+    const d = new Date(ms);
+    const time = d.toLocaleTimeString(LOCALE, { hour: "numeric", minute: "2-digit" });
+    return d.toDateString() === new Date().toDateString()
+      ? `today around ~${time}`
+      : `${d.toLocaleDateString(LOCALE, { weekday: "short" })} around ~${time}`;
+  };
+  if (l.pacePerHour == null) {
+    pred.textContent = l.isSession
+      ? "Measuring pace …"
+      : "Measuring avg pace, needs ~12 h of history";
+  } else if (l.pacePerHour <= 0.01) {
+    pred.textContent = "No meaningful usage right now";
+  } else if (l.isSession) {
+    const paceTxt = `${l.pacePerHour.toFixed(1)} %/h`;
+    if (l.exhaustsBeforeReset && l.exhaustsAtMs != null) {
+      pred.classList.add("pred-warn");
+      pred.textContent = `${paceTxt} · at this pace, exhausted ${fmtWhen(l.exhaustsAtMs)}, before the reset`;
+    } else {
+      pred.textContent = `${paceTxt} · lasts until the reset at this pace`;
+    }
+  } else {
+    const paceTxt = `avg ${l.pacePerHour.toFixed(1)} %/h (72-h)`;
+    if (l.projectedAtReset == null) {
+      pred.textContent = paceTxt;
+    } else if (l.projectedAtReset >= 100 && l.exhaustsAtMs != null) {
+      pred.classList.add("pred-warn");
+      pred.textContent = `${paceTxt} · projected to hit the limit ${fmtWhen(l.exhaustsAtMs)}`;
+    } else {
+      pred.textContent = `${paceTxt} · projected ~${l.projectedAtReset} % at reset`;
+    }
+  }
+
+  el.append(head, meter, reset, pred);
+  return el;
+}
+
+const PROVIDER_ICONS: Record<string, string> = {
+  anthropic: "ph-circle-half",
+  "openai-codex": "ph-terminal-window",
+  openrouter: "ph-shuffle",
+  zai: "ph-lightning",
+};
+
+function renderLimits(data: AllLimitsData | null): void {
   const card = $("limitsCard");
-  if (!data?.limits?.length) {
+  // Show every DETECTED provider (has credentials on this machine), even if
+  // its live call just failed — an "unavailable" card with the error is the
+  // point (surfaces real outages/auth problems instead of silently vanishing).
+  const providers = data?.providers ?? [];
+  if (!providers.length) {
     card.hidden = true;
     return;
   }
   card.hidden = false;
-  const freshness = data.source === "live"
-    ? "live"
-    : `as of ${new Date(data.fetchedAtMs).toLocaleTimeString(LOCALE, { hour: "numeric", minute: "2-digit" })} (cached)`;
-  $("limitsMeta").textContent = `${data.plan ? data.plan + " · " : ""}${freshness}`;
+  const liveCount = providers.filter((p) => p.source === "live").length;
+  $("limitsMeta").textContent = `${providers.length} provider${providers.length === 1 ? "" : "s"} detected · ${liveCount} live`;
 
   const wrap = $("limits");
   wrap.innerHTML = "";
-  for (const l of data.limits) {
-    const stateName = l.severity !== "normal" || l.percent >= 90 ? "critical" : l.percent >= 70 ? "warning" : "normal";
-
-    const el = document.createElement("div");
-    el.className = "limit";
+  for (const p of providers) {
+    const group = document.createElement("div");
+    group.className = "provider-group";
 
     const head = document.createElement("div");
-    head.className = "limit-head";
-    const name = document.createElement("span");
-    name.className = "limit-name";
-    name.textContent = limitName(l);
-    const pct = document.createElement("span");
-    pct.className = "limit-pct";
-    pct.textContent = `${l.percent} %`;
-    head.append(name, pct);
+    head.className = "provider-head";
+    const icon = document.createElement("i");
+    icon.className = `ph-bold ${PROVIDER_ICONS[p.provider] ?? "ph-plug"}`;
+    const title = document.createElement("span");
+    title.className = "provider-title";
+    title.textContent = p.label;
+    const meta = document.createElement("span");
+    meta.className = "provider-meta";
+    const freshness = p.source === "live"
+      ? "live"
+      : `unavailable${p.error ? ` (${p.error})` : ""}`;
+    meta.textContent = `${p.plan ? p.plan + " · " : ""}${freshness}`;
+    if (p.source !== "live") meta.classList.add("provider-meta-warn");
+    head.append(icon, title, meta);
+    group.append(head);
 
-    const meter = document.createElement("div");
-    meter.className = `meter ${stateName}`;
-    meter.setAttribute("role", "progressbar");
-    meter.setAttribute("aria-valuenow", String(l.percent));
-    meter.setAttribute("aria-valuemax", "100");
-    const fill = document.createElement("div");
-    fill.className = "meter-fill";
-    fill.style.width = `${Math.min(l.percent, 100)}%`;
-    meter.append(fill);
-
-    const reset = document.createElement("div");
-    reset.className = "limit-reset";
-    reset.textContent = fmtReset(l.resetsAt);
-
-    const pred = document.createElement("div");
-    pred.className = "limit-pred";
-    const fmtWhen = (ms: number): string => {
-      const d = new Date(ms);
-      const time = d.toLocaleTimeString(LOCALE, { hour: "numeric", minute: "2-digit" });
-      return d.toDateString() === new Date().toDateString()
-        ? `today around ~${time}`
-        : `${d.toLocaleDateString(LOCALE, { weekday: "short" })} around ~${time}`;
-    };
-    if (l.pacePerHour == null) {
-      pred.textContent = l.isSession
-        ? "Measuring pace …"
-        : "Measuring avg pace, needs ~12 h of history";
-    } else if (l.pacePerHour <= 0.01) {
-      pred.textContent = "No meaningful usage right now";
-    } else if (l.isSession) {
-      const paceTxt = `${l.pacePerHour.toFixed(1)} %/h`;
-      if (l.exhaustsBeforeReset && l.exhaustsAtMs != null) {
-        pred.classList.add("pred-warn");
-        pred.textContent = `${paceTxt} · at this pace, exhausted ${fmtWhen(l.exhaustsAtMs)}, before the reset`;
-      } else {
-        pred.textContent = `${paceTxt} · lasts until the reset at this pace`;
-      }
-    } else {
-      // Weekly: 72-h average — short bursts are capped by the session limit anyway
-      const paceTxt = `avg ${l.pacePerHour.toFixed(1)} %/h (72-h)`;
-      if (l.projectedAtReset == null) {
-        pred.textContent = paceTxt;
-      } else if (l.projectedAtReset >= 100 && l.exhaustsAtMs != null) {
-        pred.classList.add("pred-warn");
-        pred.textContent = `${paceTxt} · projected to hit the limit ${fmtWhen(l.exhaustsAtMs)}`;
-      } else {
-        pred.textContent = `${paceTxt} · projected ~${l.projectedAtReset} % at reset`;
-      }
+    if (p.limits.length) {
+      const tiles = document.createElement("div");
+      tiles.className = "provider-tiles";
+      for (const l of p.limits) tiles.append(renderLimitTile(l));
+      group.append(tiles);
     }
 
-    el.append(head, meter, reset, pred);
-    wrap.append(el);
+    if (p.details.length) {
+      const details = document.createElement("div");
+      details.className = "provider-details";
+      for (const d of p.details) {
+        const line = document.createElement("div");
+        line.textContent = d;
+        details.append(line);
+      }
+      group.append(details);
+    }
+
+    wrap.append(group);
   }
 }
 
@@ -645,11 +708,11 @@ function setSubtitle(): void {
 }
 
 async function load(): Promise<void> {
-  const [usageRes, limitsRes] = await Promise.all([fetch("/api/usage"), fetch("/api/limits")]);
+  const [usageRes, limitsRes] = await Promise.all([fetch("/api/usage"), fetch("/api/limits/all")]);
   state.data = (await usageRes.json()) as UsageData;
   assignSlots(state.data.rows);
   setSubtitle();
-  renderLimits((await limitsRes.json()) as LimitsData | null);
+  renderLimits((await limitsRes.json()) as AllLimitsData | null);
   render();
 
   const p = state.data.pricing;
@@ -660,7 +723,7 @@ async function load(): Promise<void> {
 
 async function refreshLimits(): Promise<void> {
   try {
-    renderLimits((await (await fetch("/api/limits")).json()) as LimitsData | null);
+    renderLimits((await (await fetch("/api/limits/all")).json()) as AllLimitsData | null);
   } catch {}
 }
 

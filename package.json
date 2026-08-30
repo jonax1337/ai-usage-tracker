@@ -1,7 +1,7 @@
 {
   "name": "claude-code-usage-tracker",
-  "version": "1.6.0",
-  "description": "Local zero-dependency dashboard and CLI for Claude Code token usage, costs, plan limits, and pace predictions",
+  "version": "1.7.0",
+  "description": "Local zero-dependency dashboard and CLI for multi-provider AI usage, costs, plan limits, and pace predictions (Claude Code, Codex, OpenRouter, Z.ai/GLM)",
   "type": "module",
   "bin": {
     "claude-usage": "dist/cli.js"

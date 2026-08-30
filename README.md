@@ -12,8 +12,8 @@ A local, zero-dependency dashboard for your [Claude Code](https://claude.com/cla
 ## Features
 
 - **Usage analytics** — daily cost per model as a stacked bar chart, plus breakdowns by project and model, computed from your local Claude Code transcripts
-- **Live plan limits** — session (5 h) and weekly limits with progress meters, fetched live from Anthropic's OAuth usage endpoint using the token Claude Code already maintains
-- **Pace predictions** — burn rate per limit and an estimate of when it runs out. The session limit uses a short window ("at this pace, exhausted at ~09:50"), weekly limits use a 72-hour average including idle time, since bursts are capped by the session limit anyway
+- **Multi-provider live plan limits** — auto-detects every AI subscription/API credential present on the machine (Claude Code/Anthropic, OpenAI Codex/ChatGPT, OpenRouter, Z.ai/GLM Coding Plan) and shows each one's live rate-limit windows with progress meters, side by side — no manual config, a provider only appears once its credentials are found on disk
+- **Pace predictions** — burn rate per limit window and an estimate of when it runs out, per provider. Short windows (session, 5h) use a tight recent window ("at this pace, exhausted at ~09:50"), longer windows (weekly, plan cycle) use a 72-hour average including idle time
 - **Real-time updates** — a file watcher on `~/.claude/projects` pushes changes to the browser via Server-Sent Events; the chart ticks while your sessions run
 - **Popout widget** — a compact always-on-top mini window via the Document Picture-in-Picture API (Chromium). Grows responsively: wider windows reveal reset times and stat tiles
 - **CLI mode** — `npm run cli` renders the same limits, pace, and today's cost as a self-refreshing terminal widget
