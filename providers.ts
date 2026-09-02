@@ -188,10 +188,24 @@ async function fetchAnthropic(): Promise<ProviderSnapshot | null> {
 
 const CODEX_AUTH = path.join(os.homedir(), ".codex", "auth.json");
 
+// OpenAI reports plan tiers as lowercase internal ids ("prolite" is the tier
+// between Plus and Pro). Map the known ones to their marketing names.
+const CODEX_PLANS: Record<string, string> = {
+  free: "Free",
+  go: "Go",
+  plus: "Plus",
+  prolite: "Pro Lite",
+  pro: "Pro",
+  team: "Team",
+  business: "Business",
+  enterprise: "Enterprise",
+  edu: "Edu",
+};
+
 function titleCase(s: string | null | undefined): string | null {
   const cleaned = (s ?? "").trim();
   if (!cleaned) return null;
-  return cleaned.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return CODEX_PLANS[cleaned.toLowerCase()] ?? cleaned.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 // Codex names its windows "primary"/"secondary" and only the length tells what
