@@ -18,7 +18,8 @@ export interface RawWindow {
   percent: number; // 0-100
   severity: string; // "normal" | anything else = attention-worthy
   resetsAt: string | null; // ISO timestamp
-  scope: string | null; // e.g. a model display name, or plan tier detail
+  scope: string | null; // stable qualifier, e.g. a model display name; part of the pace-history key
+  note: string | null; // volatile human-readable extra, e.g. "59,378 of 60,000 left"; never keyed on
 }
 
 export interface ProviderSnapshot {
@@ -107,6 +108,22 @@ function setCooldown(provider: string, ms: number): void {
   providerCooldowns.set(provider, Date.now() + ms);
 }
 
+// A detected provider that is currently backing off still exists: return an
+// "unavailable" snapshot so the dashboard keeps its row (lib.ts fills in the
+// last known windows) instead of dropping the provider until the cooldown ends.
+function coolingDown(provider: string, label: string): ProviderSnapshot {
+  return {
+    provider,
+    label,
+    plan: null,
+    source: "unavailable",
+    fetchedAtMs: Date.now(),
+    windows: [],
+    details: [],
+    error: "cooldown (rate-limited)",
+  };
+}
+
 function planLabel(tier: string | null | undefined): string | null {
   return (
     (tier ?? "")
@@ -120,7 +137,7 @@ async function fetchAnthropic(): Promise<ProviderSnapshot | null> {
   const creds = readJson<any>(CLAUDE_CREDENTIALS);
   const oauth = creds?.claudeAiOauth;
   if (!oauth?.accessToken) return null; // not detected on this machine
-  if (inCooldown("anthropic")) return null;
+  if (inCooldown("anthropic")) return coolingDown("anthropic", "Claude (Anthropic)");
   try {
     const res = await fetch("https://api.anthropic.com/api/oauth/usage", {
       headers: {
@@ -140,6 +157,7 @@ async function fetchAnthropic(): Promise<ProviderSnapshot | null> {
       severity: l.severity,
       resetsAt: l.resets_at ?? null,
       scope: l.scope?.model?.display_name ?? null,
+      note: null,
     }));
     return {
       provider: "anthropic",
@@ -176,6 +194,25 @@ function titleCase(s: string | null | undefined): string | null {
   return cleaned.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+// Codex names its windows "primary"/"secondary" and only the length tells what
+// they are: the rolling 5-hour window, the weekly window, or (on some plans)
+// something else. Label by duration so a lone weekly window is never shown as
+// a session, and keep the well-known kinds stable for pace history.
+function codexWindowKind(w: any, fallback: "session" | "weekly"): string {
+  const seconds = typeof w?.limit_window_seconds === "number" ? w.limit_window_seconds : null;
+  const minutes =
+    seconds != null && seconds > 0
+      ? seconds / 60
+      : typeof w?.window_minutes === "number" && w.window_minutes > 0
+        ? w.window_minutes
+        : null;
+  if (minutes == null) return fallback;
+  if (minutes <= 6 * 60) return "session";
+  if (minutes >= 6 * 24 * 60 && minutes <= 8 * 24 * 60) return "weekly";
+  const hours = Math.round(minutes / 60);
+  return hours % 24 === 0 ? `${hours / 24}d_window` : `${hours}h_window`;
+}
+
 function unixSecToIso(v: unknown): string | null {
   if (typeof v !== "number" || !Number.isFinite(v)) return null;
   return new Date(v * 1000).toISOString();
@@ -186,7 +223,7 @@ async function fetchCodex(): Promise<ProviderSnapshot | null> {
   const accessToken = auth?.tokens?.access_token;
   if (!accessToken) return null;
   const accountId = auth?.tokens?.account_id as string | undefined;
-  if (inCooldown("openai-codex")) return null;
+  if (inCooldown("openai-codex")) return coolingDown("openai-codex", "Codex (OpenAI)");
   try {
     const res = await fetch("https://chatgpt.com/backend-api/wham/usage", {
       headers: {
@@ -203,29 +240,30 @@ async function fetchCodex(): Promise<ProviderSnapshot | null> {
     const j = (await res.json()) as any;
     const rateLimit = j.rate_limit ?? {};
     const windows: RawWindow[] = [];
-    for (const [key, kind] of [
+    for (const [key, fallbackKind] of [
       ["primary_window", "session"],
       ["secondary_window", "weekly"],
     ] as const) {
       const w = rateLimit[key];
       if (w?.used_percent == null) continue;
       windows.push({
-        kind,
+        kind: codexWindowKind(w, fallbackKind),
         percent: Number(w.used_percent),
         severity: "normal",
         resetsAt: unixSecToIso(w.reset_at),
         scope: null,
+        note: null,
       });
     }
     const details: string[] = [];
     const banked = j.rate_limit_reset_credits?.available_count;
     if (typeof banked === "number" && banked > 0) {
-      details.push(`${banked} reset${banked === 1 ? "" : "s"} banked (redeem via Codex CLI /usage reset)`);
+      details.push(`${banked} banked reset${banked === 1 ? "" : "s"}, redeem with /usage reset in the Codex CLI`);
     }
     const credits = j.credits;
     if (credits?.has_credits) {
-      if (typeof credits.balance === "number") details.push(`Credits balance: $${credits.balance.toFixed(2)}`);
-      else if (credits.unlimited) details.push("Credits balance: unlimited");
+      if (typeof credits.balance === "number") details.push(`$${credits.balance.toFixed(2)} in credits`);
+      else if (credits.unlimited) details.push("Unlimited credits");
     }
     return {
       provider: "openai-codex",
@@ -257,7 +295,7 @@ async function fetchCodex(): Promise<ProviderSnapshot | null> {
 async function fetchOpenRouter(): Promise<ProviderSnapshot | null> {
   const key = envVar("OPENROUTER_API_KEY");
   if (!key) return null;
-  if (inCooldown("openrouter")) return null;
+  if (inCooldown("openrouter")) return coolingDown("openrouter", "OpenRouter");
   try {
     const headers = { Authorization: `Bearer ${key}` };
     const [creditsRes, keyRes] = await Promise.all([
@@ -272,8 +310,22 @@ async function fetchOpenRouter(): Promise<ProviderSnapshot | null> {
     const total = Number(credits.total_credits) || 0;
     const used = Number(credits.total_usage) || 0;
     const remaining = Math.max(0, total - used);
-    const details = [`Credits balance: $${remaining.toFixed(2)} of $${total.toFixed(2)}`];
+    const details: string[] = [];
+    // Prepaid credits are a quota too: show them as a window so the dashboard
+    // renders a meter (share of credits used) instead of a bare text line.
     const windows: RawWindow[] = [];
+    if (total > 0) {
+      windows.push({
+        kind: "credits",
+        percent: Math.min(100, Math.round((used / total) * 1000) / 10),
+        severity: "normal",
+        resetsAt: null,
+        scope: null,
+        note: `$${remaining.toFixed(2)} of $${total.toFixed(2)} left`,
+      });
+    } else {
+      details.push("No credits purchased yet");
+    }
     if (keyRes?.ok) {
       const keyData = ((await keyRes.json()) as any)?.data ?? {};
       const limit = keyData.limit;
@@ -286,6 +338,7 @@ async function fetchOpenRouter(): Promise<ProviderSnapshot | null> {
           severity: "normal",
           resetsAt: keyData.limit_reset ?? null,
           scope: null,
+          note: `$${limitRemaining.toFixed(2)} of $${limit.toFixed(2)} left`,
         });
       }
     }
@@ -320,7 +373,7 @@ async function fetchOpenRouter(): Promise<ProviderSnapshot | null> {
 async function fetchZai(): Promise<ProviderSnapshot | null> {
   const key = envVar("GLM_API_KEY") || envVar("ZAI_API_KEY");
   if (!key) return null;
-  if (inCooldown("zai")) return null;
+  if (inCooldown("zai")) return coolingDown("zai", "Z.ai / GLM Coding Plan");
   try {
     const res = await fetch("https://api.z.ai/api/monitor/usage/quota/limit", {
       headers: { Authorization: `Bearer ${key}` },
@@ -335,12 +388,19 @@ async function fetchZai(): Promise<ProviderSnapshot | null> {
     const limits: any[] = j.data.limits ?? [];
     const sorted = [...limits].sort((a, b) => (a.nextResetTime ?? 0) - (b.nextResetTime ?? 0));
     const windowLabels = ["5h_window", "plan_cycle"];
+    const fmtInt = new Intl.NumberFormat("en-US");
     const windows: RawWindow[] = sorted.map((l, i) => ({
       kind: windowLabels[i] ?? `window_${i + 1}`,
       percent: Number(l.percentage) || 0,
       severity: "normal",
       resetsAt: l.nextResetTime ? new Date(l.nextResetTime).toISOString() : null,
-      scope: typeof l.remaining === "number" && typeof l.usage === "number" ? `${l.remaining}/${l.usage}` : null,
+      // The remaining/total counts change with every call, so they must not be
+      // part of the pace-history key (scope). They go into the display-only note.
+      scope: null,
+      note:
+        typeof l.remaining === "number" && typeof l.usage === "number"
+          ? `${fmtInt.format(l.remaining)} of ${fmtInt.format(l.usage)} left`
+          : null,
     }));
     return {
       provider: "zai",
@@ -384,12 +444,11 @@ const FETCHERS: Array<() => Promise<ProviderSnapshot | null>> = [
 export async function fetchAllProviders(): Promise<ProviderSnapshot[]> {
   const results = await Promise.all(FETCHERS.map((fn) => fn().catch(() => null)));
   const snapshots = results.filter((r): r is ProviderSnapshot => r !== null);
-  // Providers in a 429/err cooldown return null (omitted above). Keep their
-  // last good snapshot from the previous cycle visible instead of dropping
-  // them from the dashboard — a cooldown is a temporary state, not "gone".
+  // A provider whose fetch threw outright (not the handled unavailable path)
+  // would vanish; keep its last good snapshot visible, flagged as unavailable.
   for (const prev of lastGoodSnapshots.values()) {
     if (!snapshots.some((s) => s.provider === prev.provider)) {
-      snapshots.push({ ...prev, source: "unavailable", error: "cooldown (rate-limited)" });
+      snapshots.push({ ...prev, source: "unavailable", error: "unreachable" });
     }
   }
   for (const s of snapshots) {

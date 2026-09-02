@@ -3,6 +3,32 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [SemVer](https://semver.org/).
 
+## [1.8.0] - 2026-09-02
+
+### Changed
+
+- **Dashboard redesign around the plan limits.** The limits card is now a "gauge board": one row per provider (name, vendor, plan and live badges on the left; that provider's windows on the right), large percentages, a meter with tick marks at the 70 % and 90 % thresholds where the color changes, the reset shown as a countdown ("Resets in 1 h 32 min (11:00 AM)"), and the pace forecast as one plain sentence. Monochrome chrome with color reserved for meaning (amber = approaching a limit, red = critical, green = live); the indigo accent is gone. New type: Bricolage Grotesque for titles and large numbers, IBM Plex Sans for text, IBM Plex Mono for tabular numbers.
+- **Summary strip** replaces the four stat tiles: cost in range, today's cost compared with the daily average, tokens with the share served from cache, and sessions. The "Models" count tile was dropped.
+- **Copy pass across the whole UI**: no more "27 %" with a space, no "data points" in the header, section titles and subtitles rewritten ("Daily cost, by model, at API list prices", "Projects and sources", "Models"), footer shortened, pace and reset sentences reworded, provider errors translated into plain language ("Rate-limited by the provider. Retrying in a few minutes.", "Sign-in expired. Log in again with the provider's own CLI.").
+- **Model labels** no longer mangle non-Claude ids: `gpt-5.6-sol-900k` shows as "GPT-5.6 sol 900k (Codex)" instead of "Gpt 5.6.sol.900k (openai-codex)", `zai/glm-5.3` as "GLM-5.3 (Z.ai)", and an unknown Hermes billing provider is no longer printed as "(unknown)".
+- Chart: the current day is labeled "Today", hovering highlights the whole column, and the donut dims the other segments while one is hovered. The donut's center label names the selected range.
+- CLI: `aiusage stop`/`status` were listed under the old `ai-usage` name in `--help`; window names now cover every provider's kinds.
+
+### Added
+
+- **Theme toggle** in the header (system, light, dark), remembered in the browser. The selected time range is remembered too.
+- **Loading, empty, and error states**: skeleton placeholders while the first payload loads, "No usage recorded in the last 30 days" in the chart and tables, an explanatory empty state when no provider credentials are found, and an error banner with a Retry button when the server is unreachable. A provider that reports no window (a fresh OpenRouter account with no credits) says so instead of rendering an empty row.
+- **List prices for non-Claude models.** The LiteLLM price table is no longer filtered to Claude ids: the canonical entries plus the `anthropic/`, `zai/` and `openrouter/` namespaces are cached (cloud-reseller variants like `azure/` and `bedrock/` stay out). Hermes rows that Hermes bills at $0 (subscription providers such as Codex or the GLM Coding Plan) now get a list-price cost like every other row, so "by model" is comparable across providers. Price lookup also strips the `<provider>/` prefix and falls back to the longest matching id (`gpt-5.6-sol-900k` uses `gpt-5.6-sol`).
+- **OpenRouter credits are shown as a meter** (share of purchased credits used, with "$x of $y left") instead of a text line.
+
+### Fixed
+
+- **Codex windows are labeled by their length** (`limit_window_seconds`), so a plan with a single weekly window is no longer shown as "Current session (5 h)" resetting five days later.
+- **Z.ai pace history was broken by design**: the remaining/used token counts were part of the window's `scope`, which is also the pace-history key, so every refresh started a new key. The counts moved to a display-only `note` field on the window; `scope` is stable again.
+- **Last known limits survive a restart.** The on-disk snapshot is trusted for its age instead of being refetched immediately on startup, and a provider whose live call fails (429 after a restart, network blip) keeps showing its previous windows, flagged as unavailable, rather than an empty card.
+- **State files are written atomically** (temp file + rename) and the pace history is merged with what is on disk before every write. The dashboard daemon, the CLI widget, and a dev checkout all share `~/.aiusage-tracker/`; with plain `writeFile` a concurrent reader could see a truncated file, parse nothing, and overwrite everyone's pace history with its own single sample. That is exactly what wiped the history on the maintainer's machine while developing this release.
+- `docs/screenshot.png` was a screenshot of a cookie banner, not the dashboard.
+
 ## [1.7.0] - 2026-08-30
 
 ### Renamed

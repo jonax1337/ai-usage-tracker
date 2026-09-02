@@ -29,6 +29,19 @@ export const STATE_DIR = (() => {
 export const EXTERNAL_USAGE_DIR = path.join(STATE_DIR, "external-usage");
 fs.mkdirSync(EXTERNAL_USAGE_DIR, { recursive: true });
 
+// State files are shared between the dashboard daemon, the CLI widget, and any
+// dev checkout. A plain writeFile is not atomic: a concurrent reader can see a
+// truncated file, parse nothing, and later overwrite everyone's data with its
+// own empty state. Write to a temp file and rename, which is atomic on every
+// platform we run on.
+function writeJsonAtomic(file: string, data: unknown): void {
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFile(tmp, JSON.stringify(data), (err) => {
+    if (err) return;
+    fs.rename(tmp, file, () => {});
+  });
+}
+
 export interface ModelPricing {
   input: number;
   output: number;
@@ -57,6 +70,7 @@ export interface LimitInfo {
   severity: string;
   resetsAt: string | null;
   scope: string | null;
+  note?: string | null;
 }
 
 export interface PredictedLimit extends LimitInfo {
@@ -114,7 +128,11 @@ async function refreshPricing(): Promise<void> {
   const raw = (await res.json()) as Record<string, LiteLLMEntry>;
   const models: Record<string, ModelPricing> = {};
   for (const [key, e] of Object.entries(raw)) {
-    if (!key.includes("claude") || typeof e?.input_cost_per_token !== "number") continue;
+    if (typeof e?.input_cost_per_token !== "number") continue;
+    // Keep the canonical (unprefixed) entries plus the namespaces our sources
+    // actually produce: Anthropic, Z.ai and OpenRouter ids. The hundreds of
+    // cloud-reseller variants (azure/, bedrock/, vertex_ai/, ...) stay out.
+    if (key.includes("/") && !/^(anthropic|zai|openrouter)\//.test(key)) continue;
     models[key.replace(/^anthropic\//, "")] = {
       input: e.input_cost_per_token * 1e6,
       output: (e.output_cost_per_token ?? 0) * 1e6,
@@ -124,9 +142,9 @@ async function refreshPricing(): Promise<void> {
   }
   if (Object.keys(models).length === 0) throw new Error("pricing data empty");
   livePricing = { fetchedAt: Date.now(), models };
-  fs.writeFile(PRICING_CACHE, JSON.stringify(livePricing), () => {});
+  writeJsonAtomic(PRICING_CACHE, livePricing);
   if (process.env.CLAUDE_USAGE_VERBOSE) {
-    console.log(`Pricing refreshed: ${Object.keys(models).length} Claude models (LiteLLM)`);
+    console.log(`Pricing refreshed: ${Object.keys(models).length} models (LiteLLM)`);
   }
 }
 
@@ -136,11 +154,24 @@ refreshPricing().catch((err) =>
 setInterval(() => refreshPricing().catch(() => {}), 24 * 3600 * 1000).unref();
 
 function pricingFor(model: string): ModelPricing | null {
-  // Transkript-IDs normalisieren: Datums-Suffix und Kontext-Marker wie "[1m]" ab
+  // Normalise transcript ids: drop the date suffix and context markers like "[1m]"
   const id = model.replace(/\[[^\]]*\]$/, "").replace(/-\d{8}$/, "");
-  const live = livePricing.models[model] ?? livePricing.models[id];
-  if (live) return live;
-  const row = PRICING.find(([m]) => id.includes(m));
+  // Hermes rows carry a "<provider>/<model>" prefix; LiteLLM keys the same
+  // model either bare ("gpt-5.5") or under its own namespace ("zai/glm-5.3").
+  const bare = id.replace(/^[a-z0-9][\w.-]*\//i, "");
+  const candidates = [model, id, bare, `zai/${bare}`, `openrouter/${bare}`];
+  for (const c of candidates) {
+    const live = livePricing.models[c];
+    if (live) return live;
+  }
+  // Variant suffixes ("gpt-5.6-sol-900k" vs LiteLLM's "gpt-5.6-sol"): take the
+  // longest known key the id starts with, provided it is specific enough.
+  let best: string | null = null;
+  for (const key of Object.keys(livePricing.models)) {
+    if (key.length >= 6 && bare.startsWith(key) && (!best || key.length > best.length)) best = key;
+  }
+  if (best) return livePricing.models[best];
+  const row = PRICING.find(([m]) => bare.includes(m));
   return row ? { input: row[1], output: row[2], cacheWrite: row[3], cacheRead: row[4] } : null;
 }
 
@@ -320,6 +351,12 @@ export async function collectUsage() {
   // every chart/table that already groups by project or model picks them up
   // for free.
   for (const r of await collectHermesUsage()) {
+    // Hermes reports $0 for subscription-billed providers (Codex, GLM Coding
+    // Plan). Every other row on the dashboard is "list price", so fill those
+    // in from the price table too; a real billed amount from Hermes always wins.
+    if (r.cost === 0 && r.input + r.output + r.cacheRead + r.cacheWrite > 0) {
+      r.cost = cost(r.model, r);
+    }
     const key = `${r.date}|${r.project}|${r.model}`;
     rows.set(key, r);
   }
@@ -391,8 +428,30 @@ function limitKey(provider: string, l: RawWindow): string {
   return `${provider}:${base}`;
 }
 
+// The dashboard daemon, the CLI widget, and a dev checkout can all run at once
+// and share this file. Merge what is on disk before writing so no process
+// clobbers the samples another one recorded; samples are keyed by timestamp.
+function mergeHistoryFromDisk(): void {
+  let onDisk: PaceSample[];
+  try {
+    onDisk = JSON.parse(fs.readFileSync(HISTORY_FILE, "utf8"));
+  } catch {
+    return;
+  }
+  if (!Array.isArray(onDisk)) return;
+  const byTime = new Map<number, PaceSample>(paceHistory.map((s) => [s.t, s]));
+  for (const s of onDisk) {
+    if (typeof s?.t !== "number" || typeof s?.values !== "object") continue;
+    const mine = byTime.get(s.t);
+    if (mine) mine.values = { ...s.values, ...mine.values };
+    else byTime.set(s.t, s);
+  }
+  paceHistory = [...byTime.values()].sort((a, b) => a.t - b.t);
+}
+
 function recordSample(provider: string, windows: RawWindow[]): void {
   const now = Date.now();
+  mergeHistoryFromDisk();
   const last = paceHistory[paceHistory.length - 1];
   const values: Record<string, number> = last && now - last.t < 2 * 60 * 1000 ? { ...last.values } : {};
   for (const l of windows) values[limitKey(provider, l)] = l.percent;
@@ -402,7 +461,7 @@ function recordSample(provider: string, windows: RawWindow[]): void {
     paceHistory.push({ t: now, values });
   }
   paceHistory = paceHistory.filter((s) => now - s.t < HISTORY_MAX_AGE);
-  fs.writeFile(HISTORY_FILE, JSON.stringify(paceHistory), () => {});
+  writeJsonAtomic(HISTORY_FILE, paceHistory);
 }
 
 // Pace in %/h über ein Zeitfenster; Samples vor einem Limit-Reset
@@ -457,6 +516,7 @@ function withPredictions(provider: string, windows: RawWindow[]): PredictedLimit
       severity: l.severity,
       resetsAt: l.resetsAt,
       scope: l.scope,
+      note: l.note ?? null,
     };
     return {
       ...limitInfo,
@@ -478,33 +538,55 @@ let liveLimitsCache: { at: number; data: AllProvidersPayload | null } = { at: 0,
 
 try {
   const saved = JSON.parse(fs.readFileSync(LIMITS_CACHE, "utf8")) as AllProvidersPayload;
-  liveLimitsCache = { at: 0, data: saved }; // at: 0 → nächster Abruf versucht sofort live
+  // Trust a fresh on-disk snapshot: a restart (or the CLI and the dashboard
+  // starting together) must not hammer the provider endpoints again.
+  liveLimitsCache = { at: saved.fetchedAtMs ?? 0, data: saved };
 } catch {}
+
+function rawWindows(p: ProviderLimitsPayload): RawWindow[] {
+  return p.limits.map((l) => ({
+    kind: l.kind,
+    percent: l.percent,
+    severity: l.severity,
+    resetsAt: l.resetsAt,
+    scope: l.scope,
+    note: l.note ?? null,
+  }));
+}
 
 async function fetchAllLimits(): Promise<AllProvidersPayload> {
   const snapshots = await fetchAllProviders();
+  const previous = liveLimitsCache.data?.providers ?? [];
   const providers: ProviderLimitsPayload[] = snapshots.map((s) => {
     if (s.source === "live") recordSample(s.provider, s.windows);
+    // A provider that failed right now (429 after a restart, a flaky network)
+    // keeps showing its last known windows from the previous snapshot rather
+    // than an empty card. The unavailable flag and error still say it is stale.
+    const last = s.source !== "live" && s.windows.length === 0
+      ? previous.find((p) => p.provider === s.provider && p.limits.length > 0)
+      : undefined;
+    const windows = last ? rawWindows(last) : s.windows;
     return {
       provider: s.provider,
       label: s.label,
-      plan: s.plan,
+      plan: s.plan ?? last?.plan ?? null,
       source: s.source,
-      fetchedAtMs: s.fetchedAtMs,
-      limits: withPredictions(s.provider, s.windows),
-      details: s.details,
+      fetchedAtMs: last ? last.fetchedAtMs : s.fetchedAtMs,
+      limits: withPredictions(s.provider, windows),
+      details: s.details.length ? s.details : last?.details ?? [],
       error: s.error,
     };
   });
   const data: AllProvidersPayload = { fetchedAtMs: Date.now(), providers };
   liveLimitsCache = { at: Date.now(), data };
-  fs.writeFile(LIMITS_CACHE, JSON.stringify(data), () => {});
+  writeJsonAtomic(LIMITS_CACHE, data);
   return data;
 }
 
-// Auch ohne offenes Dashboard weiter sampeln, damit die Pace-Historie dicht bleibt
+// Keep sampling without an open dashboard so the pace history stays dense.
+// Skip the startup fetch when the on-disk snapshot is younger than a minute.
 setInterval(() => fetchAllLimits().catch(() => {}), 5 * 60 * 1000).unref();
-fetchAllLimits().catch(() => {});
+if (Date.now() - liveLimitsCache.at >= 60_000) fetchAllLimits().catch(() => {});
 
 // Aktuellster verfügbarer Multi-Provider-Stand: live (max. alle 60s neu
 // abgefragt), sonst der letzte gute Cache-Snapshot mit frisch berechneten
@@ -521,10 +603,7 @@ export async function getAllLimits(): Promise<AllProvidersPayload> {
         ...liveLimitsCache.data,
         providers: liveLimitsCache.data.providers.map((p) => ({
           ...p,
-          limits: withPredictions(
-            p.provider,
-            p.limits.map((l) => ({ kind: l.kind, percent: l.percent, severity: l.severity, resetsAt: l.resetsAt, scope: l.scope })),
-          ),
+          limits: withPredictions(p.provider, rawWindows(p)),
         })),
       };
     }

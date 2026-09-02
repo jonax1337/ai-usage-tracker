@@ -3,63 +3,89 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AI Usage Tracker</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>" />
+  <title>AI Usage</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23111113'/%3E%3Crect x='7' y='14' width='18' height='4' rx='2' fill='%23ffffff' fill-opacity='.22'/%3E%3Crect x='7' y='14' width='11' height='4' rx='2' fill='%23ffffff'/%3E%3C/svg%3E" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css" />
   <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/bold/style.css" />
   <link rel="stylesheet" href="style.css" />
+  <script>
+    // Apply the saved theme before first paint so the page never flashes the wrong mode.
+    try {
+      var t = localStorage.getItem("theme");
+      if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+    } catch (e) {}
+  </script>
 </head>
 <body>
   <div class="viz-root">
     <header class="topbar">
       <div class="brand">
-        <span class="brand-mark"><i class="ph-bold ph-chart-line-up"></i></span>
+        <span class="brand-mark" aria-hidden="true"><i class="ph-bold ph-gauge"></i></span>
         <div class="brand-copy">
           <h1>AI Usage</h1>
-          <p class="subtitle" id="subtitle">Loading &hellip;</p>
+          <p class="status" id="status"><span class="live-dot"></span><span>Connecting</span></p>
         </div>
       </div>
       <div class="topbar-tools">
-        <div class="filter-row" id="filterRow" role="group" aria-label="Time range">
-          <button data-days="7">7d</button>
-          <button data-days="30" class="selected">30d</button>
-          <button data-days="90">90d</button>
-          <button data-days="all">All</button>
+        <div class="segmented" id="filterRow" role="group" aria-label="Time range">
+          <button type="button" data-days="7">7d</button>
+          <button type="button" data-days="30" class="selected">30d</button>
+          <button type="button" data-days="90">90d</button>
+          <button type="button" data-days="all">All</button>
         </div>
-        <button id="popoutBtn" class="icon-btn" type="button" title="Open as a floating always-on-top mini window (picture-in-picture)" aria-label="Float widget">
+        <button id="themeBtn" class="icon-btn" type="button" title="Theme: follows system" aria-label="Switch theme">
+          <i class="ph-bold ph-circle-half"></i>
+        </button>
+        <button id="popoutBtn" class="icon-btn" type="button" title="Open a floating always-on-top mini window" aria-label="Open floating window">
           <i class="ph-bold ph-picture-in-picture"></i>
         </button>
       </div>
     </header>
 
+    <div class="banner" id="errorBanner" hidden role="alert">
+      <span id="errorText"></span>
+      <button type="button" id="retryBtn" class="text-btn">Retry</button>
+    </div>
+
     <main class="app-main">
-      <section class="card limits-card" id="limitsCard" hidden>
+      <section class="card limits-card" id="limitsCard" aria-labelledby="limitsTitle">
         <div class="card-head">
-          <h2><i class="ph ph-gauge"></i>Plan limits <span class="muted" id="limitsMeta"></span></h2>
+          <h2 id="limitsTitle">Plan limits</h2>
+          <span class="card-meta" id="limitsMeta">Checking providers</span>
         </div>
-        <div class="limits" id="limits"></div>
+        <div class="providers" id="limits">
+          <div class="skeleton-row"><span class="skeleton sk-side"></span><span class="skeleton sk-tile"></span><span class="skeleton sk-tile"></span></div>
+          <div class="skeleton-row"><span class="skeleton sk-side"></span><span class="skeleton sk-tile"></span></div>
+        </div>
       </section>
 
-      <section class="tiles" id="tiles"></section>
+      <section class="stats" id="tiles" aria-label="Summary">
+        <div class="stat"><span class="skeleton sk-label"></span><span class="skeleton sk-value"></span></div>
+        <div class="stat"><span class="skeleton sk-label"></span><span class="skeleton sk-value"></span></div>
+        <div class="stat"><span class="skeleton sk-label"></span><span class="skeleton sk-value"></span></div>
+        <div class="stat"><span class="skeleton sk-label"></span><span class="skeleton sk-value"></span></div>
+      </section>
 
       <div class="charts-row">
-        <section class="card chart-card">
+        <section class="card chart-card" aria-labelledby="chartTitle">
           <div class="card-head">
-            <h2><i class="ph ph-chart-bar"></i>Cost per day <span class="muted">by model, API list prices</span></h2>
-            <div class="legend" id="legend"></div>
+            <h2 id="chartTitle">Daily cost</h2>
+            <span class="card-meta">by model, at API list prices</span>
           </div>
-          <div class="chart-wrap">
+          <div class="legend" id="legend"></div>
+          <div class="chart-wrap" id="chartWrap">
             <svg id="chart" role="img" aria-label="Stacked bar chart of daily cost per model"></svg>
           </div>
         </section>
-        <section class="card donut-card">
+        <section class="card donut-card" aria-labelledby="donutTitle">
           <div class="card-head">
-            <h2><i class="ph ph-chart-pie-slice"></i>Cost share <span class="muted">by model</span></h2>
+            <h2 id="donutTitle">Cost share</h2>
+            <span class="card-meta">by model</span>
           </div>
-          <div class="donut-wrap">
+          <div class="donut-wrap" id="donutWrap">
             <svg id="donut" role="img" aria-label="Donut chart of cost share per model" viewBox="0 0 220 220"></svg>
           </div>
         </section>
@@ -67,25 +93,36 @@
       <div class="tooltip" id="tooltip" hidden></div>
 
       <div class="two-col">
-        <section class="card">
-          <div class="card-head"><h2><i class="ph ph-folders"></i>By project / source</h2></div>
-          <table id="projectTable">
-            <thead><tr><th>Project</th><th class="num">Cost</th><th class="num">Tokens</th></tr></thead>
-            <tbody></tbody>
-          </table>
+        <section class="card" aria-labelledby="projectTitle">
+          <div class="card-head">
+            <h2 id="projectTitle">Projects and sources</h2>
+            <span class="card-meta">where the tokens went</span>
+          </div>
+          <div class="table-wrap">
+            <table id="projectTable">
+              <thead><tr><th>Project</th><th class="num">Cost</th><th class="num">Tokens</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </section>
-        <section class="card">
-          <div class="card-head"><h2><i class="ph ph-cpu"></i>By model</h2></div>
-          <table id="modelTable">
-            <thead><tr><th>Model</th><th class="num">Cost</th><th class="num">Output</th><th class="num">Cache read</th></tr></thead>
-            <tbody></tbody>
-          </table>
+        <section class="card" aria-labelledby="modelTitle">
+          <div class="card-head">
+            <h2 id="modelTitle">Models</h2>
+            <span class="card-meta">cost and token mix</span>
+          </div>
+          <div class="table-wrap">
+            <table id="modelTable">
+              <thead><tr><th>Model</th><th class="num">Cost</th><th class="num">Output</th><th class="num">Cache read</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </section>
       </div>
     </main>
 
     <footer class="page-footer">
-      Costs are computed API list prices (informational on subscription plans). Sources: <code>~/.claude/projects</code> (Claude Code CLI), Hermes Agent's <code>state.db</code>, and any files dropped into <code>external-usage/</code><span id="pricingMeta"></span>
+      <p>Costs are computed at public API list prices. On a subscription they show consumption, not what you are billed.</p>
+      <p>Sources: Claude Code transcripts in <code>~/.claude/projects</code>, Hermes Agent's <code>state.db</code>, and JSON files in <code>external-usage/</code>.<span id="pricingMeta"></span></p>
     </footer>
   </div>
   <script src="app.js"></script>

@@ -38,8 +38,12 @@ const fmtTokens = new Intl.NumberFormat("en-US", { notation: "compact", maximumF
 
 const LIMIT_NAMES: Record<string, string> = {
   session: "Session (5 h)",
-  weekly_all: "Week · all",
+  weekly_all: "Week, all",
   weekly_scoped: "Week",
+  weekly: "Week",
+  "5h_window": "5-hour window",
+  plan_cycle: "Plan cycle",
+  api_key_quota: "Key quota",
 };
 
 // ---------- daemon management ----------
@@ -153,7 +157,7 @@ function titleFor(limits: Awaited<ReturnType<typeof getLimits>>): string {
     session ? `${dot(session)} ${session.percent}% session` : null,
     week ? `${dot(week)} ${week.percent}% week` : null,
   ].filter(Boolean);
-  return parts.length ? `${parts.join(" · ")} — AI Usage` : "📊 AI Usage";
+  return parts.length ? `${parts.join(" · ")} | AI Usage` : "📊 AI Usage";
 }
 
 async function frame(): Promise<string> {
@@ -168,7 +172,7 @@ async function frame(): Promise<string> {
 
   if (limits) {
     for (const l of limits.limits as PredictedLimit[]) {
-      const name = (LIMIT_NAMES[l.kind] ?? l.kind) + (l.scope ? ` · ${l.scope}` : "");
+      const name = (LIMIT_NAMES[l.kind] ?? l.kind) + (l.scope ? `, ${l.scope}` : "");
       const pct = `${String(l.percent).padStart(3)}%`;
       const resetsAt = l.resetsAt ? dim(`resets ${fmtWhen(Date.parse(l.resetsAt))}`) : "";
       lines.push(`  ${name.padEnd(18)} ${bar(l.percent, limitColor(l))} ${bold(pct)}  ${resetsAt}`);
@@ -220,14 +224,14 @@ async function widget(): Promise<void> {
 
 // ---------- dispatch ----------
 
-const HELP = `aiusage — local multi-provider AI usage tracker
+const HELP = `aiusage: local multi-provider AI usage tracker
 
 Usage:
   aiusage            live terminal widget (limits, pace, today's cost)
   aiusage serve      run the web dashboard in the foreground
   aiusage start      run the web dashboard as a background daemon
-  ai-usage stop       stop the background daemon
-  ai-usage status     show whether the daemon is running
+  aiusage stop       stop the background daemon
+  aiusage status     show whether the daemon is running
 
 Dashboard: http://localhost:${PORT}  (PORT env var to change)
 State dir: ${STATE_DIR}`;

@@ -13,3 +13,7 @@ Thumbs.db
 .vscode/
 .idea/
 dist/
+
+# Local tool config
+.claude/
+.serena/

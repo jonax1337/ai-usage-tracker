@@ -1,4 +1,4 @@
-// Quelle des Frontends — wird mit `npm run build` nach public/app.js kompiliert.
+// Frontend source. Compiled to public/app.js with `npm run build`.
 
 interface UsageRow {
   date: string;
@@ -24,6 +24,7 @@ interface Limit {
   severity: string;
   resetsAt: string | null;
   scope: string | null;
+  note?: string | null;
   isSession?: boolean;
   pacePerHour?: number | null;
   exhaustsAtMs?: number | null;
@@ -47,11 +48,15 @@ interface AllLimitsData {
   providers: ProviderLimits[];
 }
 
+type Theme = "system" | "light" | "dark";
+
 interface AppState {
   rangeDays: number | "all";
   data: UsageData | null;
+  limits: AllLimitsData | null;
   slots: Map<string, number>;
   live: boolean;
+  theme: Theme;
 }
 
 const SLOT_VARS = ["--series-1", "--series-2", "--series-3", "--series-4", "--series-5", "--series-6", "--series-7", "--series-8"];
@@ -65,17 +70,93 @@ const fmtTokens = new Intl.NumberFormat(LOCALE, { notation: "compact", maximumFr
 const fmtInt = new Intl.NumberFormat(LOCALE);
 const fmtDay = new Intl.DateTimeFormat(LOCALE, { weekday: "short", month: "short", day: "numeric" });
 const fmtPct = new Intl.NumberFormat(LOCALE, { style: "percent", maximumFractionDigits: 1 });
+const fmtPct0 = new Intl.NumberFormat(LOCALE, { style: "percent", maximumFractionDigits: 0 });
 
-const state: AppState = { rangeDays: 30, data: null, slots: new Map(), live: false };
+function readStorage(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function writeStorage(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {}
+}
+
+function initialRange(): number | "all" {
+  const saved = readStorage("range");
+  if (saved === "all") return "all";
+  const n = Number(saved);
+  return [7, 30, 90].includes(n) ? n : 30;
+}
+
+function initialTheme(): Theme {
+  const saved = readStorage("theme");
+  return saved === "light" || saved === "dark" ? saved : "system";
+}
+
+const state: AppState = {
+  rangeDays: initialRange(),
+  data: null,
+  limits: null,
+  slots: new Map(),
+  live: false,
+  theme: initialTheme(),
+};
 
 const $ = (id: string): HTMLElement => document.getElementById(id)!;
 
+function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text != null) node.textContent = text;
+  return node;
+}
+
+// ---------- Model and provider labels ----------
+
+const PROVIDER_NAMES: Record<string, string> = {
+  anthropic: "Anthropic",
+  "openai-codex": "Codex",
+  openai: "OpenAI",
+  openrouter: "OpenRouter",
+  zai: "Z.ai",
+  google: "Google",
+  unknown: "",
+};
+
+const FAMILY_CASE: Record<string, string> = {
+  gpt: "GPT",
+  glm: "GLM",
+  o1: "o1",
+  o3: "o3",
+  o4: "o4",
+  claude: "Claude",
+};
+
+function baseModelLabel(id: string): string {
+  // "claude-opus-4-1-20250805[1m]" -> "Opus 4.1"; "gpt-5.6-sol-900k" -> "GPT-5.6 sol 900k"
+  const clean = id.replace(/\[[^\]]*\]$/, "");
+  const parts = clean.split("-").filter((p) => p && !/^\d{8}$/.test(p));
+  if (!parts.length) return id;
+  if (parts[0] === "claude") {
+    const family = parts[1] ? parts[1][0].toUpperCase() + parts[1].slice(1) : "Claude";
+    const version = parts.slice(2).join(".");
+    return version ? `${family} ${version}` : family;
+  }
+  const family = FAMILY_CASE[parts[0]] ?? parts[0][0].toUpperCase() + parts[0].slice(1);
+  if (parts.length === 1) return family;
+  const version = parts[1];
+  const rest = parts.slice(2).join(" ");
+  return `${family}-${version}${rest ? ` ${rest}` : ""}`;
+}
+
 function modelLabel(id: string): string {
   // External-machine rows are namespaced "<machine>:<model>" (lib.ts) and
-  // non-Anthropic Hermes rows "<provider>/<model>" (hermes.ts) — surface the
-  // source as a small prefix instead of leaking the raw namespaced id.
-  // Anthropic models (Claude Code CLI or Hermes) use the bare model id with
-  // no prefix, so usage for the same model merges into a single row here.
+  // non-Anthropic Hermes rows "<provider>/<model>" (hermes.ts). Show the source
+  // as a small suffix instead of leaking the raw namespaced id.
   const externalMatch = id.match(/^([a-z0-9][\w.-]*):(.+)$/i);
   if (externalMatch && !id.startsWith("claude-")) {
     const [, machine, model] = externalMatch;
@@ -84,16 +165,14 @@ function modelLabel(id: string): string {
   const providerMatch = id.match(/^([a-z0-9][\w.-]*)\/(.+)$/i);
   if (providerMatch) {
     const [, provider, model] = providerMatch;
-    return `${modelLabel(model)} (${provider})`;
+    const name = PROVIDER_NAMES[provider.toLowerCase()] ?? provider;
+    return name ? `${baseModelLabel(model)} (${name})` : baseModelLabel(model);
   }
-  const parts = id.replace(/^claude-/, "").split("-").filter((p) => !/^\d{8}$/.test(p));
-  const family = parts[0] ? parts[0][0].toUpperCase() + parts[0].slice(1) : id;
-  const version = parts.slice(1).join(".");
-  return version ? `${family} ${version}` : family;
+  return baseModelLabel(id);
 }
 
 function cssVar(name: string): string {
-  return getComputedStyle(document.querySelector(".viz-root")!).getPropertyValue(name).trim();
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
 function seriesColor(model: string): string {
@@ -106,9 +185,9 @@ function totalTokens(r: UsageRow): number {
   return r.input + r.cacheWrite + r.cacheRead + r.output;
 }
 
-// Feste Slot-Zuordnung über den GESAMTEN Datensatz — Farben hängen am Modell,
-// nicht am gerade gewählten Zeitraum. Bei Live-Updates behalten bereits
-// zugeordnete Modelle ihre Farbe; neue Modelle bekommen den nächsten freien Slot.
+// Fixed slot assignment over the WHOLE dataset: colors belong to a model, not to
+// the selected range. On live updates, known models keep their color and new
+// ones take the next free slot.
 function assignSlots(rows: UsageRow[]): void {
   const totals = new Map<string, number>();
   for (const r of rows) totals.set(r.model, (totals.get(r.model) ?? 0) + r.cost);
@@ -140,6 +219,10 @@ function foldModel(model: string): string {
   return state.slots.has(model) ? model : OTHER;
 }
 
+function rangeLabel(): string {
+  return state.rangeDays === "all" ? "all time" : `the last ${state.rangeDays} days`;
+}
+
 function render(): void {
   if (!state.data) return;
   const from = rangeStart();
@@ -151,29 +234,44 @@ function render(): void {
   renderTables(rows);
 }
 
+// ---------- Summary strip ----------
+
 function renderTiles(rows: UsageRow[], sessions: Array<{ date: string; count: number }>): void {
+  const today = localISO(new Date());
   const costSum = rows.reduce((a, r) => a + r.cost, 0);
   const tokenSum = rows.reduce((a, r) => a + totalTokens(r), 0);
-  const outputSum = rows.reduce((a, r) => a + r.output, 0);
+  const cacheSum = rows.reduce((a, r) => a + r.cacheRead, 0);
   const sessionSum = sessions.reduce((a, s) => a + s.count, 0);
   const dayCount = new Set(rows.map((r) => r.date)).size || 1;
+  const todayCost = rows.filter((r) => r.date === today).reduce((a, r) => a + r.cost, 0);
+  const avgPerDay = costSum / dayCount;
 
-  const tiles: Array<[string, string, string, string]> = [
-    ["Cost (list price)", fmtCost.format(costSum), `avg ${fmtCost.format(costSum / dayCount)} per active day`, "ph-currency-dollar"],
-    ["Total tokens", fmtTokens.format(tokenSum), `${fmtTokens.format(outputSum)} of it output`, "ph-database"],
-    ["Sessions", fmtInt.format(sessionSum), `across ${fmtInt.format(dayCount)} active days`, "ph-lightning"],
-    ["Models", fmtInt.format(new Set(rows.map((r) => r.model)).size), "in the selected range", "ph-cpu"],
+  let todaySub: string;
+  if (todayCost === 0) todaySub = "nothing recorded yet";
+  else if (avgPerDay <= 0 || dayCount < 2) todaySub = "first day in range";
+  else {
+    const ratio = todayCost / avgPerDay - 1;
+    todaySub = Math.abs(ratio) < 0.05
+      ? "on par with the daily average so far"
+      : `${fmtPct0.format(Math.abs(ratio))} ${ratio > 0 ? "above" : "below"} the daily average so far`;
+  }
+
+  const tiles: Array<[string, string, string]> = [
+    ["Cost in range", fmtCost.format(costSum), `${fmtCost.format(avgPerDay)} per active day`],
+    ["Today", fmtCost.format(todayCost), todaySub],
+    ["Tokens", fmtTokens.format(tokenSum), tokenSum > 0 ? `${fmtPct0.format(cacheSum / tokenSum)} read from cache` : "no tokens yet"],
+    ["Sessions", fmtInt.format(sessionSum), `across ${fmtInt.format(dayCount)} active day${dayCount === 1 ? "" : "s"}`],
   ];
-  $("tiles").innerHTML = tiles
-    .map(() => `<div class="tile"><div class="tile-icon"><i class="ph"></i></div><div class="tile-body"><div class="label"></div><div class="value"></div><div class="delta"></div></div></div>`)
-    .join("");
-  document.querySelectorAll<HTMLElement>("#tiles .tile").forEach((el, i) => {
-    el.querySelector(".tile-icon i")!.className = `ph ${tiles[i][3]}`;
-    el.querySelector(".label")!.textContent = tiles[i][0];
-    el.querySelector(".value")!.textContent = tiles[i][1];
-    el.querySelector(".delta")!.textContent = tiles[i][2];
-  });
+  const wrap = $("tiles");
+  wrap.innerHTML = "";
+  for (const [label, value, sub] of tiles) {
+    const stat = el("div", "stat");
+    stat.append(el("span", "label", label), el("span", "value", value), el("span", "sub", sub));
+    wrap.append(stat);
+  }
 }
+
+// ---------- Daily cost chart ----------
 
 function buildDays(rows: UsageRow[]): string[] {
   if (!rows.length) return [];
@@ -188,6 +286,19 @@ function buildDays(rows: UsageRow[]): string[] {
   return days;
 }
 
+function setEmpty(wrapId: string, className: string, message: string | null): void {
+  const wrap = $(wrapId);
+  const existing = wrap.querySelector(`.${className}`);
+  if (existing) existing.remove();
+  const svg = wrap.querySelector("svg");
+  if (message) {
+    if (svg) svg.setAttribute("hidden", "");
+    wrap.append(el("div", className, message));
+  } else if (svg) {
+    svg.removeAttribute("hidden");
+  }
+}
+
 function renderChart(rows: UsageRow[]): void {
   const svg = $("chart") as unknown as SVGSVGElement;
   const legend = $("legend");
@@ -195,9 +306,12 @@ function renderChart(rows: UsageRow[]): void {
   legend.innerHTML = "";
 
   const days = buildDays(rows);
-  if (!days.length) return;
+  if (!days.length) {
+    setEmpty("chartWrap", "chart-empty", `No usage recorded in ${rangeLabel()}.`);
+    return;
+  }
+  setEmpty("chartWrap", "chart-empty", null);
 
-  // Pro Tag und Modell (gefaltet) aggregieren
   const perDay = new Map<string, Map<string, number>>(days.map((d) => [d, new Map()]));
   const modelsInRange = new Set<string>();
   for (const r of rows) {
@@ -206,21 +320,16 @@ function renderChart(rows: UsageRow[]): void {
     const dm = perDay.get(r.date);
     if (dm) dm.set(m, (dm.get(m) ?? 0) + r.cost);
   }
-  // Stapelreihenfolge = Slot-Reihenfolge, "Andere" zuletzt
+  // Stack order = slot order, "Other" last
   const series = [...state.slots.keys()].filter((m) => modelsInRange.has(m));
   if (modelsInRange.has(OTHER)) series.push(OTHER);
 
-  // Legende (nur bei ≥ 2 Serien)
   if (series.length >= 2) {
     for (const m of series) {
-      const item = document.createElement("span");
-      item.className = "item";
-      const sw = document.createElement("span");
-      sw.className = "swatch";
+      const item = el("span", "item");
+      const sw = el("span", "swatch");
       sw.style.background = seriesColor(m);
-      const name = document.createElement("span");
-      name.textContent = m === OTHER ? OTHER : modelLabel(m);
-      item.append(sw, name);
+      item.append(sw, el("span", undefined, m === OTHER ? OTHER : modelLabel(m)));
       legend.append(item);
     }
   }
@@ -237,7 +346,6 @@ function renderChart(rows: UsageRow[]): void {
     0.01,
   );
 
-  // Saubere y-Achsen-Schritte
   const rawStep = maxTotal / 4;
   const mag = 10 ** Math.floor(Math.log10(rawStep));
   const step = [1, 2, 2.5, 5, 10].map((s) => s * mag).find((s) => s >= rawStep)!;
@@ -245,17 +353,16 @@ function renderChart(rows: UsageRow[]): void {
   const y = (v: number) => pad.top + plotH - (v / yMax) * plotH;
 
   const ns = "http://www.w3.org/2000/svg";
-  const el = (tag: string, attrs: Record<string, string | number>): SVGElement => {
+  const svgEl = (tag: string, attrs: Record<string, string | number>): SVGElement => {
     const node = document.createElementNS(ns, tag);
     for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, String(v));
     return node as SVGElement;
   };
 
-  // Gridlines + Ticks
   for (let v = 0; v <= yMax + 1e-9; v += step) {
     const yy = y(v);
-    svg.append(el("line", { x1: pad.left, x2: W - pad.right, y1: yy, y2: yy, class: v === 0 ? "baseline" : "gridline" }));
-    const t = el("text", { x: pad.left - 8, y: yy + 4, "text-anchor": "end" });
+    svg.append(svgEl("line", { x1: pad.left, x2: W - pad.right, y1: yy, y2: yy, class: v === 0 ? "baseline" : "gridline" }));
+    const t = svgEl("text", { x: pad.left - 8, y: yy + 4, "text-anchor": "end" });
     t.textContent = fmtTick.format(v);
     svg.append(t);
   }
@@ -263,11 +370,18 @@ function renderChart(rows: UsageRow[]): void {
   const band = plotW / days.length;
   const barW = Math.min(24, band * 0.7);
   const gap = 2;
+  const today = localISO(new Date());
+  const labelEvery = Math.ceil(days.length / 10);
 
   days.forEach((day, i) => {
     const x = pad.left + i * band + (band - barW) / 2;
     const dm = perDay.get(day)!;
     const stack = series.map((m) => [m, dm.get(m) ?? 0] as const).filter(([, v]) => v > 0);
+
+    // Hover band behind the column, lit up from the hit target below
+    const bandRect = svgEl("rect", { x: pad.left + i * band, y: pad.top, width: band, height: plotH, rx: 4, class: "band" });
+    svg.append(bandRect);
+
     let cursor = y(0);
     stack.forEach(([m, v], idx) => {
       const h = Math.max(y(0) - y(v) - (idx > 0 ? gap : 0), 0);
@@ -278,30 +392,33 @@ function renderChart(rows: UsageRow[]): void {
         return;
       }
       if (isTop && h > 4) {
-        // 4px gerundetes Datenende oben, eckig an der Basis
         const r = 4;
-        svg.append(el("path", {
+        svg.append(svgEl("path", {
           d: `M${x},${top + h} V${top + r} Q${x},${top} ${x + r},${top} H${x + barW - r} Q${x + barW},${top} ${x + barW},${top + r} V${top + h} Z`,
           fill: seriesColor(m),
         }));
       } else {
-        svg.append(el("rect", { x, y: top, width: barW, height: h, fill: seriesColor(m) }));
+        svg.append(svgEl("rect", { x, y: top, width: barW, height: h, fill: seriesColor(m) }));
       }
       cursor = top;
     });
 
-    // x-Beschriftung: nicht jeden Tag beschriften
-    const labelEvery = Math.ceil(days.length / 10);
-    if (i % labelEvery === 0) {
-      const t = el("text", { x: x + barW / 2, y: H - 8, "text-anchor": "middle" });
-      t.textContent = new Date(day + "T00:00:00").toLocaleDateString(LOCALE, { month: "short", day: "numeric" });
+    const isToday = day === today;
+    if (i % labelEvery === 0 || isToday) {
+      const t = svgEl("text", { x: x + barW / 2, y: H - 8, "text-anchor": "middle", class: isToday ? "today" : "" });
+      t.textContent = isToday ? "Today" : new Date(day + "T00:00:00").toLocaleDateString(LOCALE, { month: "short", day: "numeric" });
       svg.append(t);
     }
 
-    // Hover-Ziel: die ganze Spalte, größer als die Marke selbst
-    const hit = el("rect", { x: pad.left + i * band, y: pad.top, width: band, height: plotH, class: "hit" });
-    hit.addEventListener("pointermove", (ev) => showTooltip(ev as PointerEvent, day, dm, series));
-    hit.addEventListener("pointerleave", hideTooltip);
+    const hit = svgEl("rect", { x: pad.left + i * band, y: pad.top, width: band, height: plotH, class: "hit" });
+    hit.addEventListener("pointermove", (ev) => {
+      bandRect.classList.add("on");
+      showTooltip(ev as PointerEvent, day, dm, series);
+    });
+    hit.addEventListener("pointerleave", () => {
+      bandRect.classList.remove("on");
+      hideTooltip();
+    });
     svg.append(hit);
   });
 }
@@ -309,52 +426,30 @@ function renderChart(rows: UsageRow[]): void {
 function showTooltip(ev: PointerEvent, day: string, dm: Map<string, number>, series: string[]): void {
   const tt = $("tooltip");
   tt.innerHTML = "";
-  const date = document.createElement("div");
-  date.className = "tt-date";
-  date.textContent = fmtDay.format(new Date(day + "T00:00:00"));
-  tt.append(date);
+  tt.append(el("div", "tt-date", fmtDay.format(new Date(day + "T00:00:00"))));
 
   let total = 0;
   for (const m of series) {
     const v = dm.get(m) ?? 0;
     if (v <= 0) continue;
     total += v;
-    const row = document.createElement("div");
-    row.className = "tt-row";
-    const key = document.createElement("span");
-    key.className = "tt-key";
+    const row = el("div", "tt-row");
+    const key = el("span", "tt-key");
     key.style.background = seriesColor(m);
-    const val = document.createElement("span");
-    val.className = "tt-value";
-    val.textContent = fmtCostFine.format(v);
-    const name = document.createElement("span");
-    name.className = "tt-name";
-    name.textContent = m === OTHER ? OTHER : modelLabel(m);
-    row.append(key, val, name);
+    row.append(key, el("span", "tt-value", fmtCostFine.format(v)), el("span", "tt-name", m === OTHER ? OTHER : modelLabel(m)));
     tt.append(row);
   }
   if (total === 0) {
-    const row = document.createElement("div");
-    row.className = "tt-name";
-    row.textContent = "No usage";
-    tt.append(row);
+    tt.append(el("div", "tt-name", "No usage"));
   } else {
-    const sum = document.createElement("div");
-    sum.className = "tt-row tt-total";
-    const val = document.createElement("span");
-    val.className = "tt-value";
-    val.textContent = fmtCostFine.format(total);
-    const name = document.createElement("span");
-    name.className = "tt-name";
-    name.textContent = "total";
-    sum.append(val, name);
+    const sum = el("div", "tt-row tt-total");
+    sum.append(el("span", "tt-value", fmtCostFine.format(total)), el("span", "tt-name", "total"));
     tt.append(sum);
   }
-
   placeTooltip(tt, ev);
 }
 
-// position: fixed — the tooltip lives in the viewport and is never clipped by a card
+// position: fixed, so the tooltip lives in the viewport and is never clipped by a card
 function placeTooltip(tt: HTMLElement, ev: PointerEvent): void {
   tt.hidden = false;
   let x = ev.clientX + 14;
@@ -369,19 +464,27 @@ function hideTooltip(): void {
   $("tooltip").hidden = true;
 }
 
-// Donut: cost share per model in the selected range (same colors as the bar chart)
+// ---------- Cost share donut ----------
+
 function renderDonut(rows: UsageRow[]): void {
   const svg = $("donut") as unknown as SVGSVGElement;
   svg.innerHTML = "";
+  svg.classList.remove("dim");
 
   const totals = new Map<string, number>();
   for (const r of rows) {
     const m = foldModel(r.model);
     totals.set(m, (totals.get(m) ?? 0) + r.cost);
   }
-  const series = [...state.slots.keys()].filter((m) => totals.has(m));
-  if (totals.has(OTHER)) series.push(OTHER);
+  const series = [...state.slots.keys()].filter((m) => (totals.get(m) ?? 0) > 0);
+  if ((totals.get(OTHER) ?? 0) > 0) series.push(OTHER);
   const total = series.reduce((a, m) => a + (totals.get(m) ?? 0), 0);
+
+  if (total <= 0) {
+    setEmpty("donutWrap", "chart-empty", "No cost to split yet.");
+    return;
+  }
+  setEmpty("donutWrap", "chart-empty", null);
 
   const ns = "http://www.w3.org/2000/svg";
   const cx = 110;
@@ -389,29 +492,23 @@ function renderDonut(rows: UsageRow[]): void {
   const radius = 82;
   const stroke = 27;
 
-  if (total <= 0) {
-    const t = document.createElementNS(ns, "text");
-    t.setAttribute("x", String(cx));
-    t.setAttribute("y", String(cy));
-    t.setAttribute("text-anchor", "middle");
-    t.setAttribute("class", "donut-center-label");
-    t.textContent = "No usage";
-    svg.append(t);
-    return;
-  }
-
   const polar = (angle: number): [number, number] => [
     cx + radius * Math.cos(angle - Math.PI / 2),
     cy + radius * Math.sin(angle - Math.PI / 2),
   ];
 
-  const attachTip = (el: SVGElement, name: string, value: number): void => {
-    el.addEventListener("pointermove", (ev) => showDonutTip(ev as PointerEvent, name, value, total));
-    el.addEventListener("pointerleave", hideTooltip);
+  const attachTip = (node: SVGElement, name: string, value: number): void => {
+    node.addEventListener("pointermove", (ev) => {
+      svg.classList.add("dim");
+      showDonutTip(ev as PointerEvent, name, value, total);
+    });
+    node.addEventListener("pointerleave", () => {
+      svg.classList.remove("dim");
+      hideTooltip();
+    });
   };
 
   if (series.length === 1) {
-    // A single segment is a full ring — no arc gaps needed
     const circle = document.createElementNS(ns, "circle");
     circle.setAttribute("cx", String(cx));
     circle.setAttribute("cy", String(cy));
@@ -423,7 +520,6 @@ function renderDonut(rows: UsageRow[]): void {
     attachTip(circle, series[0], total);
     svg.append(circle);
   } else {
-    // 2px surface gap between segments, expressed as an angle at this radius
     const gapAngle = 2 / radius;
     let angle = 0;
     for (const m of series) {
@@ -456,27 +552,43 @@ function renderDonut(rows: UsageRow[]): void {
   centerLabel.setAttribute("y", String(cy + 18));
   centerLabel.setAttribute("text-anchor", "middle");
   centerLabel.setAttribute("class", "donut-center-label");
-  centerLabel.textContent = "total";
+  centerLabel.textContent = rangeLabel();
   svg.append(centerValue, centerLabel);
 }
 
 function showDonutTip(ev: PointerEvent, model: string, value: number, total: number): void {
   const tt = $("tooltip");
   tt.innerHTML = "";
-  const row = document.createElement("div");
-  row.className = "tt-row";
-  const key = document.createElement("span");
-  key.className = "tt-key";
+  const row = el("div", "tt-row");
+  const key = el("span", "tt-key");
   key.style.background = seriesColor(model);
-  const val = document.createElement("span");
-  val.className = "tt-value";
-  val.textContent = fmtCost.format(value);
-  const name = document.createElement("span");
-  name.className = "tt-name";
-  name.textContent = `${model === OTHER ? OTHER : modelLabel(model)} · ${fmtPct.format(value / total)}`;
-  row.append(key, val, name);
+  row.append(
+    key,
+    el("span", "tt-value", fmtCost.format(value)),
+    el("span", "tt-name", `${model === OTHER ? OTHER : modelLabel(model)}, ${fmtPct.format(value / total)}`),
+  );
   tt.append(row);
   placeTooltip(tt, ev);
+}
+
+// ---------- Tables ----------
+
+function numCell(text: string, isZero = false): HTMLTableCellElement {
+  const td = el("td", "num", text);
+  if (isZero) td.classList.add("zero");
+  return td;
+}
+
+function setTableEmpty(tableId: string, message: string | null): void {
+  const table = $(tableId);
+  const wrap = table.parentElement!;
+  wrap.querySelector(".table-empty")?.remove();
+  if (message) {
+    table.hidden = true;
+    wrap.append(el("div", "table-empty", message));
+  } else {
+    table.hidden = false;
+  }
 }
 
 function renderTables(rows: UsageRow[]): void {
@@ -495,257 +607,341 @@ function renderTables(rows: UsageRow[]): void {
     byModel.set(r.model, m);
   }
 
+  const emptyMsg = rows.length ? null : `Nothing recorded in ${rangeLabel()}.`;
+  setTableEmpty("projectTable", emptyMsg);
+  setTableEmpty("modelTable", emptyMsg);
+
   const projBody = document.querySelector("#projectTable tbody")!;
   projBody.innerHTML = "";
   for (const [name, v] of [...byProject.entries()].sort((a, b) => b[1].cost - a[1].cost)) {
-    const tr = document.createElement("tr");
-    const tdName = document.createElement("td");
-    tdName.textContent = name;
-    const tdCost = document.createElement("td");
-    tdCost.className = "num";
-    tdCost.textContent = fmtCost.format(v.cost);
-    const tdTok = document.createElement("td");
-    tdTok.className = "num";
-    tdTok.textContent = fmtTokens.format(v.tokens);
-    tr.append(tdName, tdCost, tdTok);
+    const tr = el("tr");
+    tr.append(el("td", undefined, name), numCell(fmtCost.format(v.cost), v.cost === 0), numCell(fmtTokens.format(v.tokens)));
     projBody.append(tr);
   }
 
   const modelBody = document.querySelector("#modelTable tbody")!;
   modelBody.innerHTML = "";
-  for (const [name, v] of [...byModel.entries()].sort((a, b) => b[1].cost - a[1].cost)) {
-    const tr = document.createElement("tr");
-    const tdName = document.createElement("td");
-    const sw = document.createElement("span");
-    sw.className = "swatch";
+  for (const [name, v] of [...byModel.entries()].sort((a, b) => b[1].cost - a[1].cost || b[1].output - a[1].output)) {
+    const tr = el("tr");
+    const tdName = el("td");
+    const sw = el("span", "swatch");
     sw.style.background = seriesColor(foldModel(name));
     tdName.append(sw, document.createTextNode(modelLabel(name)));
-    const tdCost = document.createElement("td");
-    tdCost.className = "num";
-    tdCost.textContent = fmtCost.format(v.cost);
-    const tdOut = document.createElement("td");
-    tdOut.className = "num";
-    tdOut.textContent = fmtTokens.format(v.output);
-    const tdCache = document.createElement("td");
-    tdCache.className = "num";
-    tdCache.textContent = fmtTokens.format(v.cacheRead);
-    tr.append(tdName, tdCost, tdOut, tdCache);
+    tr.append(tdName, numCell(fmtCost.format(v.cost), v.cost === 0), numCell(fmtTokens.format(v.output)), numCell(fmtTokens.format(v.cacheRead)));
     modelBody.append(tr);
   }
 }
 
+// ---------- Plan limits ----------
+
 const LIMIT_NAMES: Record<string, string> = {
-  session: "Current session (5 h)",
-  weekly_all: "Week · all models",
-  weekly_scoped: "Week",
-  weekly: "Week",
+  session: "Session (5 h)",
+  weekly_all: "Weekly, all models",
+  weekly_scoped: "Weekly",
+  weekly: "Weekly",
   "5h_window": "5-hour window",
   plan_cycle: "Plan cycle",
-  api_key_quota: "API key quota",
+  api_key_quota: "Key quota",
+  credits: "Credits used",
 };
 
 function limitName(l: Limit): string {
-  const base = LIMIT_NAMES[l.kind] ?? l.kind;
-  return l.scope ? `${base} · ${l.scope}` : base;
+  const base = LIMIT_NAMES[l.kind] ?? l.kind.replace(/_/g, " ");
+  return l.scope ? `${base}, ${l.scope}` : base;
+}
+
+function fmtClock(ms: number): string {
+  return new Date(ms).toLocaleTimeString(LOCALE, { hour: "numeric", minute: "2-digit" });
+}
+
+function fmtDuration(ms: number): string {
+  const mins = Math.max(0, Math.round(ms / 60000));
+  if (mins < 60) return `${mins} min`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} h ${String(mins % 60).padStart(2, "0")} min`;
+  const days = Math.floor(hours / 24);
+  return `${days} d ${hours % 24} h`;
+}
+
+function fmtWhen(ms: number): string {
+  const d = new Date(ms);
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return sameDay
+    ? `at ${fmtClock(ms)}`
+    : `${d.toLocaleDateString(LOCALE, { weekday: "short" })} at ${fmtClock(ms)}`;
 }
 
 function fmtReset(iso: string | null): string {
   if (!iso) return "";
-  const d = new Date(iso);
+  const ms = Date.parse(iso);
+  if (isNaN(ms)) return "";
+  const diff = ms - Date.now();
+  if (diff <= 0) return "Reset is due";
+  const d = new Date(ms);
   const sameDay = d.toDateString() === new Date().toDateString();
-  const time = d.toLocaleTimeString(LOCALE, { hour: "numeric", minute: "2-digit" });
-  return sameDay
-    ? `Resets today at ${time}`
-    : `Resets ${d.toLocaleDateString(LOCALE, { weekday: "short", month: "short", day: "numeric" })}, ${time}`;
+  const absolute = sameDay
+    ? fmtClock(ms)
+    : `${d.toLocaleDateString(LOCALE, { weekday: "short", month: "short", day: "numeric" })}, ${fmtClock(ms)}`;
+  return `Resets in ${fmtDuration(diff)} (${absolute})`;
+}
+
+function paceText(l: Limit): { text: string; warn: boolean } {
+  if (l.percent <= 0) return { text: "Nothing used in this window yet", warn: false };
+  if (l.percent >= 100) return { text: "Limit reached, waiting for the reset", warn: true };
+  if (l.pacePerHour == null) {
+    return { text: l.isSession ? "Measuring pace" : "Pace available after 12 h of history", warn: false };
+  }
+  if (l.pacePerHour <= 0.01) return { text: "Idle, no recent usage", warn: false };
+  const pace = `${l.pacePerHour.toFixed(1)}%/h`;
+  if (l.isSession) {
+    if (l.exhaustsBeforeReset && l.exhaustsAtMs != null) {
+      return { text: `${pace}, runs out ${fmtWhen(l.exhaustsAtMs)}, before the reset`, warn: true };
+    }
+    return { text: `${pace}, holds until the reset`, warn: false };
+  }
+  const avg = `${pace} avg over 72 h`;
+  if (l.projectedAtReset == null) return { text: avg, warn: false };
+  if (l.projectedAtReset >= 100 && l.exhaustsAtMs != null) {
+    return { text: `${avg}, hits the limit ${fmtWhen(l.exhaustsAtMs)}`, warn: true };
+  }
+  return { text: `${avg}, heading for ${l.projectedAtReset}% at reset`, warn: false };
 }
 
 function renderLimitTile(l: Limit): HTMLElement {
   const stateName = l.severity !== "normal" || l.percent >= 90 ? "critical" : l.percent >= 70 ? "warning" : "normal";
+  const tile = el("div", `limit ${stateName}`);
 
-  const el = document.createElement("div");
-  el.className = "limit";
+  const head = el("div", "limit-head");
+  const name = el("span", "limit-name", limitName(l));
+  if (l.note) name.append(el("span", "limit-note", l.note));
+  head.append(name, el("span", "limit-pct", `${Math.round(l.percent)}%`));
 
-  const head = document.createElement("div");
-  head.className = "limit-head";
-  const name = document.createElement("span");
-  name.className = "limit-name";
-  name.textContent = limitName(l);
-  const pct = document.createElement("span");
-  pct.className = "limit-pct";
-  pct.textContent = `${l.percent} %`;
-  head.append(name, pct);
-
-  const meter = document.createElement("div");
-  meter.className = `meter ${stateName}`;
+  const meter = el("div", "meter");
   meter.setAttribute("role", "progressbar");
+  meter.setAttribute("aria-label", limitName(l));
   meter.setAttribute("aria-valuenow", String(l.percent));
+  meter.setAttribute("aria-valuemin", "0");
   meter.setAttribute("aria-valuemax", "100");
-  const fill = document.createElement("div");
-  fill.className = "meter-fill";
+  const fill = el("div", "meter-fill");
   fill.style.width = `${Math.min(l.percent, 100)}%`;
   meter.append(fill);
-
-  const reset = document.createElement("div");
-  reset.className = "limit-reset";
-  reset.textContent = fmtReset(l.resetsAt);
-
-  const pred = document.createElement("div");
-  pred.className = "limit-pred";
-  const fmtWhen = (ms: number): string => {
-    const d = new Date(ms);
-    const time = d.toLocaleTimeString(LOCALE, { hour: "numeric", minute: "2-digit" });
-    return d.toDateString() === new Date().toDateString()
-      ? `today around ~${time}`
-      : `${d.toLocaleDateString(LOCALE, { weekday: "short" })} around ~${time}`;
-  };
-  if (l.pacePerHour == null) {
-    pred.textContent = l.isSession
-      ? "Measuring pace …"
-      : "Measuring avg pace, needs ~12 h of history";
-  } else if (l.pacePerHour <= 0.01) {
-    pred.textContent = "No meaningful usage right now";
-  } else if (l.isSession) {
-    const paceTxt = `${l.pacePerHour.toFixed(1)} %/h`;
-    if (l.exhaustsBeforeReset && l.exhaustsAtMs != null) {
-      pred.classList.add("pred-warn");
-      pred.textContent = `${paceTxt} · at this pace, exhausted ${fmtWhen(l.exhaustsAtMs)}, before the reset`;
-    } else {
-      pred.textContent = `${paceTxt} · lasts until the reset at this pace`;
-    }
-  } else {
-    const paceTxt = `avg ${l.pacePerHour.toFixed(1)} %/h (72-h)`;
-    if (l.projectedAtReset == null) {
-      pred.textContent = paceTxt;
-    } else if (l.projectedAtReset >= 100 && l.exhaustsAtMs != null) {
-      pred.classList.add("pred-warn");
-      pred.textContent = `${paceTxt} · projected to hit the limit ${fmtWhen(l.exhaustsAtMs)}`;
-    } else {
-      pred.textContent = `${paceTxt} · projected ~${l.projectedAtReset} % at reset`;
-    }
+  for (const pct of [70, 90]) {
+    const tick = el("span", "meter-tick");
+    tick.style.left = `${pct}%`;
+    meter.append(tick);
   }
 
-  el.append(head, meter, reset, pred);
-  return el;
+  const foot = el("div", "limit-foot", fmtReset(l.resetsAt));
+  const { text, warn } = paceText(l);
+  const pace = el("div", "limit-pace");
+  if (warn) {
+    pace.classList.add("pred-warn");
+    const icon = el("i");
+    icon.className = "ph-bold ph-warning";
+    pace.append(icon);
+  }
+  pace.append(document.createTextNode(text));
+
+  tile.append(head, meter, foot, pace);
+  return tile;
 }
 
-const PROVIDER_ICONS: Record<string, string> = {
-  anthropic: "ph-circle-half",
-  "openai-codex": "ph-terminal-window",
-  openrouter: "ph-shuffle",
-  zai: "ph-lightning",
+interface ProviderMeta { icon: string; name: string; vendor: string }
+
+const PROVIDER_META: Record<string, ProviderMeta> = {
+  anthropic: { icon: "ph-circle-half", name: "Claude", vendor: "Anthropic" },
+  "openai-codex": { icon: "ph-terminal-window", name: "Codex", vendor: "OpenAI" },
+  openrouter: { icon: "ph-shuffle", name: "OpenRouter", vendor: "pay as you go" },
+  zai: { icon: "ph-lightning", name: "GLM Coding Plan", vendor: "Z.ai" },
 };
 
-function renderLimits(data: AllLimitsData | null): void {
-  const card = $("limitsCard");
-  // Show every DETECTED provider (has credentials on this machine), even if
-  // its live call just failed — an "unavailable" card with the error is the
-  // point (surfaces real outages/auth problems instead of silently vanishing).
-  const providers = data?.providers ?? [];
-  if (!providers.length) {
-    card.hidden = true;
-    return;
-  }
-  card.hidden = false;
-  const liveCount = providers.filter((p) => p.source === "live").length;
-  $("limitsMeta").textContent = `${providers.length} provider${providers.length === 1 ? "" : "s"} detected · ${liveCount} live`;
+function providerError(p: ProviderLimits): string {
+  const err = p.error ?? "";
+  if (/cooldown/i.test(err)) return "Rate-limited by the provider. Showing the last good values, retrying in a few minutes.";
+  if (/HTTP 401|HTTP 403/.test(err)) return "Sign-in expired. Log in again with the provider's own CLI.";
+  if (/HTTP 429/.test(err)) return "Rate-limited by the provider. Retrying in a few minutes.";
+  if (/timeout|abort/i.test(err)) return "The provider did not answer in time. Retrying.";
+  return err ? `Could not reach the provider (${err}).` : "Could not reach the provider.";
+}
 
+function renderLimits(data: AllLimitsData | null): void {
+  state.limits = data;
   const wrap = $("limits");
   wrap.innerHTML = "";
+  // Every DETECTED provider (credentials found on this machine) is shown, even
+  // when its live call failed: an outage or expired login should be visible.
+  const providers = data?.providers ?? [];
+  if (!providers.length) {
+    $("limitsMeta").textContent = "No providers detected";
+    const empty = el("div", "empty-state");
+    empty.innerHTML =
+      "No AI subscription or API key was found on this machine. Log in with Claude Code or Codex, or set " +
+      "<code>OPENROUTER_API_KEY</code> or <code>GLM_API_KEY</code>, and the limits appear here.";
+    wrap.append(empty);
+    return;
+  }
+  const liveCount = providers.filter((p) => p.source === "live").length;
+  const n = providers.length;
+  $("limitsMeta").textContent =
+    liveCount === n
+      ? `${n} provider${n === 1 ? "" : "s"}, all live`
+      : `${liveCount} of ${n} providers live`;
+
   for (const p of providers) {
-    const group = document.createElement("div");
-    group.className = "provider-group";
+    const meta = PROVIDER_META[p.provider] ?? { icon: "ph-plug", name: p.label, vendor: "" };
+    const row = el("div", "provider");
 
-    const head = document.createElement("div");
-    head.className = "provider-head";
-    const icon = document.createElement("i");
-    icon.className = `ph-bold ${PROVIDER_ICONS[p.provider] ?? "ph-plug"}`;
-    const title = document.createElement("span");
-    title.className = "provider-title";
-    title.textContent = p.label;
-    const meta = document.createElement("span");
-    meta.className = "provider-meta";
-    const freshness = p.source === "live"
-      ? "live"
-      : `unavailable${p.error ? ` (${p.error})` : ""}`;
-    meta.textContent = `${p.plan ? p.plan + " · " : ""}${freshness}`;
-    if (p.source !== "live") meta.classList.add("provider-meta-warn");
-    head.append(icon, title, meta);
-    group.append(head);
+    const side = el("div", "provider-side");
+    const name = el("div", "provider-name");
+    const icon = el("i");
+    icon.className = `ph-bold ${meta.icon}`;
+    name.append(icon, document.createTextNode(meta.name));
+    side.append(name);
+    if (meta.vendor) side.append(el("div", "provider-vendor", meta.vendor));
 
+    const tags = el("div", "provider-tags");
+    if (p.plan) tags.append(el("span", "tag", p.plan));
+    tags.append(el("span", `tag ${p.source === "live" ? "live" : "off"}`, p.source === "live" ? "Live" : "Unavailable"));
+    side.append(tags);
+
+    if (p.source !== "live") side.append(el("div", "provider-note err", providerError(p)));
+    for (const d of p.details) side.append(el("div", "provider-note", d));
+    row.append(side);
+
+    const windows = el("div", "provider-windows");
     if (p.limits.length) {
-      const tiles = document.createElement("div");
-      tiles.className = "provider-tiles";
-      for (const l of p.limits) tiles.append(renderLimitTile(l));
-      group.append(tiles);
+      for (const l of p.limits) windows.append(renderLimitTile(l));
+    } else {
+      windows.classList.add("empty");
+      windows.textContent = p.source === "live"
+        ? "This provider reports no usage windows."
+        : "Waiting for the provider to answer.";
     }
-
-    if (p.details.length) {
-      const details = document.createElement("div");
-      details.className = "provider-details";
-      for (const d of p.details) {
-        const line = document.createElement("div");
-        line.textContent = d;
-        details.append(line);
-      }
-      group.append(details);
-    }
-
-    wrap.append(group);
+    row.append(windows);
+    wrap.append(row);
   }
 }
 
-function setSubtitle(): void {
-  if (!state.data) return;
-  const sub = $("subtitle");
-  sub.innerHTML = "";
-  const dot = document.createElement("span");
-  dot.className = "live-dot" + (state.live ? " on" : "");
-  const text = document.createElement("span");
-  text.textContent =
-    `${state.live ? "Live" : "Offline"} · ${fmtInt.format(state.data.rows.length)} data points · ` +
-    `updated ${new Date(state.data.generatedAt).toLocaleTimeString(LOCALE)}`;
-  sub.append(dot, text);
+// ---------- Header status ----------
+
+function setStatus(): void {
+  const status = $("status");
+  status.innerHTML = "";
+  const dot = el("span", "live-dot");
+  let text: string;
+  if (!state.data) {
+    text = "Connecting";
+  } else {
+    const updated = new Date(state.data.generatedAt).toLocaleTimeString(LOCALE, { hour: "numeric", minute: "2-digit" });
+    if (state.live) {
+      dot.classList.add("on");
+      text = `Live, updated ${updated}`;
+    } else {
+      text = `Reconnecting, last update ${updated}`;
+    }
+  }
+  status.append(dot, el("span", undefined, text));
+}
+
+function showError(message: string | null): void {
+  const banner = $("errorBanner");
+  if (!message) {
+    banner.hidden = true;
+    return;
+  }
+  $("errorText").textContent = message;
+  banner.hidden = false;
+}
+
+// ---------- Data loading ----------
+
+async function fetchJson<T>(url: string): Promise<T> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url} answered ${res.status}`);
+  return (await res.json()) as T;
 }
 
 async function load(): Promise<void> {
-  const [usageRes, limitsRes] = await Promise.all([fetch("/api/usage"), fetch("/api/limits/all")]);
-  state.data = (await usageRes.json()) as UsageData;
-  assignSlots(state.data.rows);
-  setSubtitle();
-  renderLimits((await limitsRes.json()) as AllLimitsData | null);
+  const [usage, limits] = await Promise.all([
+    fetchJson<UsageData>("/api/usage"),
+    fetchJson<AllLimitsData | null>("/api/limits/all").catch(() => null),
+  ]);
+  state.data = usage;
+  assignSlots(usage.rows);
+  showError(null);
+  setStatus();
+  renderLimits(limits);
   render();
 
-  const p = state.data.pricing;
+  const p = usage.pricing;
   $("pricingMeta").textContent = p?.source === "live" && p.fetchedAt
-    ? ` · Pricing: live (LiteLLM, ${new Date(p.fetchedAt).toLocaleDateString(LOCALE)})`
-    : " · Pricing: built-in table";
+    ? ` Prices from LiteLLM, refreshed ${new Date(p.fetchedAt).toLocaleDateString(LOCALE, { month: "short", day: "numeric" })}.`
+    : " Prices from the built-in table.";
 }
 
 async function refreshLimits(): Promise<void> {
   try {
-    renderLimits((await (await fetch("/api/limits/all")).json()) as AllLimitsData | null);
+    renderLimits(await fetchJson<AllLimitsData | null>("/api/limits/all"));
   } catch {}
 }
 
-// Limits regelmäßig nachziehen — auch ohne Transkript-Änderungen
+// Limits refresh every minute even without transcript changes; countdowns
+// re-render from the last payload in between so "resets in" stays honest.
 setInterval(refreshLimits, 60_000);
+setInterval(() => {
+  if (state.limits && document.visibilityState === "visible") renderLimits(state.limits);
+}, 30_000);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) refreshLimits();
 });
 
-// Live-Updates: Server pusht per SSE, sobald sich Transkripte ändern
+// Live updates: the server pushes an SSE event whenever transcripts change
 const events = new EventSource("/api/events");
 events.addEventListener("change", () => load().catch(() => {}));
 events.onopen = () => {
   state.live = true;
-  if (state.data) setSubtitle();
+  setStatus();
 };
 events.onerror = () => {
   state.live = false;
-  if (state.data) setSubtitle();
+  setStatus();
 };
 
-// Widget-Modus: dieselbe Seite, kompakt — genutzt vom Popout-Fenster
+// ---------- Theme ----------
+
+const THEME_ORDER: Theme[] = ["system", "light", "dark"];
+const THEME_ICON: Record<Theme, string> = { system: "ph-circle-half", light: "ph-sun", dark: "ph-moon" };
+const THEME_TITLE: Record<Theme, string> = { system: "Theme: follows system", light: "Theme: light", dark: "Theme: dark" };
+
+function applyTheme(theme: Theme): void {
+  state.theme = theme;
+  if (theme === "system") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", theme);
+  const btn = $("themeBtn");
+  btn.querySelector("i")!.className = `ph-bold ${THEME_ICON[theme]}`;
+  btn.title = THEME_TITLE[theme];
+  // Series colors are theme-dependent, so anything already drawn needs a repaint
+  if (state.data) render();
+}
+
+function resolvedDark(): boolean {
+  if (state.theme === "dark") return true;
+  if (state.theme === "light") return false;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+
+applyTheme(state.theme);
+$("themeBtn").addEventListener("click", () => {
+  const next = THEME_ORDER[(THEME_ORDER.indexOf(state.theme) + 1) % THEME_ORDER.length];
+  writeStorage("theme", next);
+  applyTheme(next);
+});
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+  if (state.theme === "system" && state.data) render();
+});
+
+// ---------- Widget mode and popout ----------
+
 const IS_WIDGET = new URLSearchParams(location.search).has("widget");
 if (IS_WIDGET) document.body.classList.add("widget-mode");
 
@@ -754,16 +950,16 @@ interface DocumentPictureInPicture {
 }
 declare const documentPictureInPicture: DocumentPictureInPicture | undefined;
 
-// Popout: echtes Always-on-top-Fenster via Document-Picture-in-Picture,
-// Fallback: kleines Browserfenster
+// Popout: a real always-on-top window via Document Picture-in-Picture (Chromium),
+// otherwise a small regular browser window.
 $("popoutBtn").addEventListener("click", async () => {
   const url = "/?widget=1";
+  const bg = resolvedDark() ? "#0a0a0b" : "#f5f5f6";
   if ("documentPictureInPicture" in window && documentPictureInPicture) {
     try {
-      const pip = await documentPictureInPicture.requestWindow({ width: 360, height: 300 });
-      const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-      pip.document.documentElement.style.background = dark ? "#08090a" : "#f7f7f8";
-      pip.document.body.style.cssText = `margin:0;overflow:hidden;background:${dark ? "#08090a" : "#f7f7f8"}`;
+      const pip = await documentPictureInPicture.requestWindow({ width: 380, height: 320 });
+      pip.document.documentElement.style.background = bg;
+      pip.document.body.style.cssText = `margin:0;overflow:hidden;background:${bg}`;
       const iframe = pip.document.createElement("iframe");
       iframe.src = url;
       iframe.style.cssText = "border:0;width:100vw;height:100vh;display:block";
@@ -771,23 +967,51 @@ $("popoutBtn").addEventListener("click", async () => {
       return;
     } catch {}
   }
-  window.open(url, "claude-usage-widget", "width=380,height=330,popup=yes");
+  window.open(url, "ai-usage-widget", "width=400,height=340,popup=yes");
 });
 
+// ---------- Range control ----------
+
+function syncRangeButtons(): void {
+  document.querySelectorAll<HTMLButtonElement>("#filterRow button").forEach((b) => {
+    const value = b.dataset.days === "all" ? "all" : Number(b.dataset.days);
+    b.classList.toggle("selected", value === state.rangeDays);
+    b.setAttribute("aria-pressed", String(value === state.rangeDays));
+  });
+}
+
+syncRangeButtons();
 $("filterRow").addEventListener("click", (ev) => {
   const btn = (ev.target as HTMLElement).closest("button");
   if (!btn) return;
-  document.querySelectorAll("#filterRow button").forEach((b) => b.classList.remove("selected"));
-  btn.classList.add("selected");
   state.rangeDays = btn.dataset.days === "all" ? "all" : Number(btn.dataset.days);
+  writeStorage("range", String(state.rangeDays));
+  syncRangeButtons();
   render();
 });
 
-window.addEventListener("resize", () => {
-  if (!state.data) return;
-  renderChart(state.data.rows.filter((r) => inRange(r.date, rangeStart())));
+$("retryBtn").addEventListener("click", () => {
+  showError(null);
+  boot();
 });
 
-load().catch((err) => {
-  $("subtitle").textContent = `Failed to load: ${err}`;
+let resizeTimer: number | undefined;
+window.addEventListener("resize", () => {
+  if (!state.data) return;
+  clearTimeout(resizeTimer);
+  resizeTimer = window.setTimeout(() => {
+    renderChart(state.data!.rows.filter((r) => inRange(r.date, rangeStart())));
+  }, 80);
 });
+
+function boot(): void {
+  load().catch((err) => {
+    showError(`Could not load usage data. ${err instanceof Error ? err.message : String(err)}`);
+    const status = $("status");
+    status.innerHTML = "";
+    const dot = el("span", "live-dot err");
+    status.append(dot, el("span", undefined, "Server not reachable"));
+  });
+}
+
+boot();
